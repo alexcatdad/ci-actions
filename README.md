@@ -7,7 +7,10 @@ in each project until repeated migrations justify extracting them.
 
 ## Build an image
 
-Pin the shared workflow to a reviewed commit SHA. Public projects use the default
+Pin the shared workflow to a reviewed commit SHA. The caller must explicitly
+grant `contents: read`; add `packages: write` only to its GHCR publishing job.
+The reusable workflow preserves caller permissions and requests no additional
+permissions. Public projects use the default
 GitHub-hosted runner. Private projects can set `runner: homelab` when that runner
 has the isolated BuildKit container policy described below.
 

@@ -36,9 +36,6 @@ on:
         description: Image name at its immutable digest (not available in a registry unless published)
         value: ${{ jobs.build.outputs.image }}
 
-permissions:
-  contents: read
-
 jobs:
   build:
     runs-on: ${{ inputs.runner }}
@@ -53,16 +50,29 @@ jobs:
         # Hosted file commands belong to the host runner UID. A root shim fixes
         # only those files before dropping to the rootless image user. ARC is
         # already UID 1000 and goes directly to the nonroot shell.
-        shell: >-
-          sh -c 'if [ "$(id -u)" = 0 ]; then
-          for path in "$GITHUB_OUTPUT" "$GITHUB_ENV" "$GITHUB_PATH" "$GITHUB_STEP_SUMMARY"; do
-          [ -z "$path" ] || chown 1000:1000 "$path" || exit; done;
-          exec su -p user -s /bin/sh -c "exec sh \"$1\"";
-          else exec sh "$1"; fi' sh {0}
+        shell: /tmp/ci-nonroot-shell {0}
     outputs:
       digest: ${{ steps.build.outputs.digest }}
       image: ${{ steps.build.outputs.image }}
     steps:
+      - name: Prepare nonroot step shell
+        shell: sh
+        run: |
+          set -eu
+          cat > /tmp/ci-nonroot-shell <<'SHELL'
+          #!/bin/sh
+          set -eu
+          if [ "$(id -u)" = 0 ]; then
+            for path in "$GITHUB_OUTPUT" "$GITHUB_ENV" "$GITHUB_PATH" "$GITHUB_STEP_SUMMARY"; do
+              [ -z "$path" ] || chown 1000:1000 "$path"
+            done
+            export CI_STEP_SCRIPT="$1"
+            # shellcheck disable=SC2016
+            exec su -p user -s /bin/sh -c 'exec sh "$CI_STEP_SCRIPT"'
+          fi
+          exec sh "$1"
+          SHELL
+          chmod 755 /tmp/ci-nonroot-shell
       - name: Checkout caller without persisted credentials
         id: checkout
         env:
