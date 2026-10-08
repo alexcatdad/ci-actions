@@ -1,0 +1,324 @@
+name: Rootless immutable tag image
+
+on:
+  workflow_call:
+    inputs:
+      runner:
+        type: string
+        default: ubuntu-latest
+      release-tag:
+        description: Existing annotated tag reachable from the caller default branch
+        type: string
+        required: true
+      context:
+        type: string
+        default: .
+      dockerfile:
+        type: string
+        default: Dockerfile
+      image:
+        description: GHCR image beneath the caller repository package path
+        type: string
+        required: true
+    secrets:
+      registry-username:
+        required: true
+      registry-password:
+        required: true
+    outputs:
+      digest:
+        value: ${{ jobs.build.outputs.digest || jobs.validate.outputs.digest }}
+      image:
+        value: ${{ jobs.build.outputs.image || jobs.validate.outputs.image }}
+      source-sha:
+        value: ${{ jobs.validate.outputs.source-sha }}
+
+# Serialize all tag publications for an image, including aliases sharing a SHA.
+concurrency:
+  group: immutable-tag-image-${{ github.repository }}-${{ inputs.image }}
+  cancel-in-progress: false
+
+jobs:
+  validate:
+    runs-on: ${{ inputs.runner }}
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      packages: read
+    container:
+      image: node:26.10.0@sha256:a723b54c35a76e947095a20a67d39585bb09c862e6b1adeb8a9f518f95e34fb0
+    outputs:
+      source-sha: ${{ steps.source.outputs.source_sha }}
+      tag-object: ${{ steps.source.outputs.tag_object }}
+      reuse: ${{ steps.registry.outputs.reuse }}
+      digest: ${{ steps.registry.outputs.digest }}
+      image: ${{ steps.registry.outputs.image }}
+    steps:
+      - name: Check out caller default branch
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Resolve trusted annotated tag
+        id: source
+        env:
+          RELEASE_TAG: ${{ inputs.release-tag }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          CHECKOUT_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$RELEASE_TAG" =~ ^[a-zA-Z0-9][a-zA-Z0-9._-]{0,127}$ ]]
+          git check-ref-format "refs/tags/$RELEASE_TAG"
+          case "$GITHUB_EVENT_NAME:$GITHUB_REF" in
+            "push:refs/tags/$RELEASE_TAG"|"workflow_dispatch:refs/heads/$DEFAULT_BRANCH") ;;
+            *) echo 'Tag publication requires its tag push or a default-branch manual run' >&2; exit 1 ;;
+          esac
+          auth=$(printf 'x-access-token:%s' "$CHECKOUT_TOKEN" | base64 | tr -d '\n')
+          export GIT_CONFIG_COUNT=1
+          export GIT_CONFIG_KEY_0=http.https://github.com/.extraheader
+          export GIT_CONFIG_VALUE_0="AUTHORIZATION: basic $auth"
+          git fetch --no-tags origin \
+            "refs/heads/$DEFAULT_BRANCH:refs/remotes/origin/$DEFAULT_BRANCH" \
+            "refs/tags/$RELEASE_TAG:refs/tags/$RELEASE_TAG"
+          unset GIT_CONFIG_COUNT GIT_CONFIG_KEY_0 GIT_CONFIG_VALUE_0 CHECKOUT_TOKEN auth
+          test "$(git cat-file -t "refs/tags/$RELEASE_TAG")" = tag
+          source_sha=$(git rev-parse "refs/tags/$RELEASE_TAG^{commit}")
+          git merge-base --is-ancestor "$source_sha" "refs/remotes/origin/$DEFAULT_BRANCH"
+          if [ "$GITHUB_EVENT_NAME" = push ]; then test "$source_sha" = "$GITHUB_SHA"; fi
+          tag_object=$(git rev-parse "refs/tags/$RELEASE_TAG")
+          printf 'source_sha=%s\ntag_object=%s\n' "$source_sha" "$tag_object" >> "$GITHUB_OUTPUT"
+      - name: Set up pinned Bun
+        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version: 1.4.2
+          no-cache: true
+      - name: Inspect existing immutable image aliases
+        id: registry
+        env:
+          BUILD_IMAGE: ${{ inputs.image }}
+          RELEASE_TAG: ${{ inputs.release-tag }}
+          SOURCE_SHA: ${{ steps.source.outputs.source_sha }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          bun <<'JS'
+          const image = process.env.BUILD_IMAGE;
+          const repository = process.env.GITHUB_REPOSITORY.toLowerCase();
+          const prefix = `ghcr.io/${repository}`;
+          if (!(image === prefix || image.startsWith(`${prefix}/`)) || !/^ghcr\.io\/[a-z0-9]+(([._]|__|-+)[a-z0-9]+)*(\/[a-z0-9]+(([._]|__|-+)[a-z0-9]+)*)+$/.test(image)) {
+            throw new Error('Image must belong to the caller GHCR repository path');
+          }
+          const name = image.slice('ghcr.io/'.length);
+          const basic = Buffer.from(`${process.env.GITHUB_ACTOR}:${process.env.GH_TOKEN}`).toString('base64');
+          const tokenResponse = await fetch(`https://ghcr.io/token?service=ghcr.io&scope=${encodeURIComponent(`repository:${name}:pull`)}`, {
+            headers: {Authorization: `Basic ${basic}`},
+          });
+          if (!tokenResponse.ok) throw new Error(`Registry authorization failed: ${tokenResponse.status}`);
+          const {token} = await tokenResponse.json();
+          if (typeof token !== 'string' || !token) throw new Error('Missing registry pull token');
+          const accept = 'application/vnd.oci.image.index.v1+json,application/vnd.docker.distribution.manifest.list.v2+json,application/vnd.oci.image.manifest.v1+json,application/vnd.docker.distribution.manifest.v2+json';
+          async function manifest(reference, allowMissing = false) {
+            const response = await fetch(`https://ghcr.io/v2/${name}/manifests/${reference}`, {headers: {Authorization: `Bearer ${token}`, Accept: accept}});
+            if (allowMissing && response.status === 404) return null;
+            if (!response.ok) throw new Error(`Registry manifest read failed: ${response.status}`);
+            const bytes = await response.arrayBuffer();
+            const digest = `sha256:${new Bun.CryptoHasher('sha256').update(bytes).digest('hex')}`;
+            if (/^sha256:/.test(reference) && reference !== digest) throw new Error('Platform manifest digest mismatch');
+            if (response.headers.get('docker-content-digest') !== digest) throw new Error('Registry digest verification failed');
+            return {digest, document: JSON.parse(Buffer.from(bytes).toString())};
+          }
+          const release = await manifest(process.env.RELEASE_TAG, true);
+          const source = await manifest(`sha-${process.env.SOURCE_SHA}`, true);
+          if (!release && !source) {
+            await Bun.write(process.env.GITHUB_OUTPUT, 'reuse=false\n');
+          } else {
+            if (!release || !source || release.digest !== source.digest) throw new Error('Partial or mismatched immutable image aliases; create a new patch tag');
+            const descriptors = release.document.manifests;
+            if (!Array.isArray(descriptors) || descriptors.length !== 2 || descriptors.some(item => item.platform?.os !== 'linux') ||
+                descriptors.map(item => item.platform?.architecture).sort().join(',') !== 'amd64,arm64') {
+              throw new Error('Existing image is not the required AMD64/ARM64 index');
+            }
+            for (const descriptor of descriptors) {
+              if (!/^sha256:[a-f0-9]{64}$/.test(descriptor.digest)) throw new Error('Invalid platform manifest digest');
+              const platform = await manifest(descriptor.digest);
+              const configDigest = platform.document.config?.digest;
+              if (!/^sha256:[a-f0-9]{64}$/.test(configDigest)) throw new Error('Invalid image config digest');
+              const configResponse = await fetch(`https://ghcr.io/v2/${name}/blobs/${configDigest}`, {headers: {Authorization: `Bearer ${token}`}});
+              if (!configResponse.ok) throw new Error(`Image config read failed: ${configResponse.status}`);
+              const bytes = await configResponse.arrayBuffer();
+              if (`sha256:${new Bun.CryptoHasher('sha256').update(bytes).digest('hex')}` !== configDigest) throw new Error('Image config digest mismatch');
+              const config = JSON.parse(Buffer.from(bytes).toString());
+              if (config.os !== descriptor.platform.os || config.architecture !== descriptor.platform.architecture) {
+                throw new Error('Image config platform does not match its index descriptor');
+              }
+              const labels = config.config?.Labels;
+              if (labels?.['org.opencontainers.image.version'] !== process.env.RELEASE_TAG ||
+                  labels?.['org.opencontainers.image.revision'] !== process.env.SOURCE_SHA ||
+                  labels?.['org.opencontainers.image.source'] !== `https://github.com/${process.env.GITHUB_REPOSITORY}`) {
+                throw new Error('Existing image source labels do not match the release commit');
+              }
+            }
+            await Bun.write(process.env.GITHUB_OUTPUT, `reuse=true\ndigest=${release.digest}\nimage=${image}@${release.digest}\n`);
+          }
+          JS
+
+  build:
+    needs: validate
+    if: needs.validate.outputs.reuse == 'false'
+    runs-on: ${{ inputs.runner }}
+    timeout-minutes: 120
+    permissions:
+      contents: read
+      packages: write
+    container:
+      image: moby/buildkit:v0.33.1-rootless@sha256:980970b9ed3682d1933cc5bd1b2ebbc00686693e03f571ec3a8f59c376fe2d78
+      # Hosted Docker requires these rootless user-namespace allowances. ARC must
+      # supply an equivalent scoped pod policy; it does not use these options.
+      options: --user 0:0 --cap-drop ALL --cap-add CHOWN --cap-add SETUID --cap-add SETGID --security-opt seccomp=unconfined --security-opt apparmor=unconfined
+    defaults:
+      run:
+        # Hosted file commands belong to the host runner UID. A root shim fixes
+        # only those files before dropping to the rootless image user. ARC is
+        # already UID 1000 and goes directly to the nonroot shell.
+        shell: sh /tmp/ci-nonroot-shell {0}
+    outputs:
+      digest: ${{ steps.build.outputs.digest }}
+      image: ${{ steps.build.outputs.image }}
+    steps:
+      - name: Prepare nonroot step shell
+        shell: sh
+        run: |
+          set -eu
+          cat > /tmp/ci-nonroot-shell <<'SHELL'
+          #!/bin/sh
+          set -eu
+          if [ "$(id -u)" = 0 ]; then
+            for path in "$GITHUB_OUTPUT" "$GITHUB_ENV" "$GITHUB_PATH" "$GITHUB_STEP_SUMMARY"; do
+              [ -z "$path" ] || chown 1000:1000 "$path"
+            done
+            export CI_STEP_SCRIPT="$1"
+            # shellcheck disable=SC2016
+            exec su -p user -s /bin/sh -c 'exec sh "$CI_STEP_SCRIPT"'
+          fi
+          exec sh "$1"
+          SHELL
+          chmod 755 /tmp/ci-nonroot-shell
+      - name: Checkout caller without persisted credentials
+        id: checkout
+        env:
+          CHECKOUT_TOKEN: ${{ github.token }}
+          CHECKOUT_REPOSITORY: ${{ github.repository }}
+          CHECKOUT_SHA: ${{ needs.validate.outputs.source-sha }}
+          RELEASE_TAG: ${{ inputs.release-tag }}
+          TAG_OBJECT: ${{ needs.validate.outputs.tag-object }}
+        run: |
+          set -eu
+          export HOME=/home/user
+          checkout=$(mktemp -d /tmp/ci-checkout.XXXXXX)
+          trap 'rm -rf "$checkout"' EXIT HUP INT TERM
+          cd "$checkout"
+          git init -q
+          git remote add origin "https://github.com/$CHECKOUT_REPOSITORY.git"
+          auth=$(printf 'x-access-token:%s' "$CHECKOUT_TOKEN" | base64 | tr -d '\n')
+          export GIT_CONFIG_COUNT=1
+          export GIT_CONFIG_KEY_0=http.https://github.com/.extraheader
+          export GIT_CONFIG_VALUE_0="AUTHORIZATION: basic $auth"
+          git fetch --no-tags origin "refs/tags/$RELEASE_TAG:refs/tags/$RELEASE_TAG"
+          test "$(git cat-file -t "refs/tags/$RELEASE_TAG")" = tag
+          test "$(git rev-parse "refs/tags/$RELEASE_TAG")" = "$TAG_OBJECT"
+          test "$(git rev-parse "refs/tags/$RELEASE_TAG^{commit}")" = "$CHECKOUT_SHA"
+          unset GIT_CONFIG_COUNT GIT_CONFIG_KEY_0 GIT_CONFIG_VALUE_0 CHECKOUT_TOKEN auth
+          git checkout -q --detach "$CHECKOUT_SHA"
+          test "$(git rev-parse HEAD)" = "$CHECKOUT_SHA"
+          printf 'directory=%s\n' "$checkout" >> "$GITHUB_OUTPUT"
+          trap - EXIT HUP INT TERM
+      - name: Build and publish immutable AMD64/ARM64 aliases
+        id: build
+        env:
+          CHECKOUT_DIRECTORY: ${{ steps.checkout.outputs.directory }}
+          BUILD_CONTEXT: ${{ inputs.context }}
+          BUILD_DOCKERFILE: ${{ inputs.dockerfile }}
+          BUILD_IMAGE: ${{ inputs.image }}
+          BUILD_SHA: ${{ needs.validate.outputs.source-sha }}
+          RELEASE_TAG: ${{ inputs.release-tag }}
+          BUILD_PLATFORMS: linux/amd64,linux/arm64
+          REGISTRY_USERNAME: ${{ secrets.registry-username }}
+          REGISTRY_PASSWORD: ${{ secrets.registry-password }}
+        run: |
+          set -eu
+          export HOME=/home/user
+          fail() { printf '%s\n' "$1" >&2; exit 1; }
+          case "$BUILD_PLATFORMS" in
+            linux/amd64|linux/amd64,linux/arm64) ;;
+            *) fail 'Unsupported build platforms' ;;
+          esac
+          # Only local paths beneath the checkout. Reject symlink escapes too.
+          case "$BUILD_CONTEXT:$BUILD_DOCKERFILE" in *[!a-zA-Z0-9_./:-]*) fail 'Unsupported build path' ;; esac
+          case "$BUILD_CONTEXT" in /*) fail 'Context must be relative' ;; esac
+          case "$BUILD_DOCKERFILE" in /*) fail 'Dockerfile must be relative' ;; esac
+          workspace=$(realpath "$CHECKOUT_DIRECTORY")
+          context=$(realpath "$CHECKOUT_DIRECTORY/$BUILD_CONTEXT")
+          dockerfile=$(realpath "$CHECKOUT_DIRECTORY/$BUILD_DOCKERFILE")
+          case "$context/" in "$workspace/"*) ;; *) fail 'Context escapes checkout' ;; esac
+          case "$dockerfile" in "$workspace/"*) ;; *) fail 'Dockerfile escapes checkout' ;; esac
+          test -d "$context" && test -f "$dockerfile" || fail 'Build paths do not exist'
+          printf '%s\n' "$BUILD_IMAGE" | grep -Eq '^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)*(:[0-9]+)?/[a-z0-9]+(([._]|__|-+)[a-z0-9]+)*(/[a-z0-9]+(([._]|__|-+)[a-z0-9]+)*)*$' || fail 'Invalid registry/image name'
+          work=$(mktemp -d)
+          export DOCKER_CONFIG="$work/auth"
+          mkdir -p "$DOCKER_CONFIG"
+          cleanup() {
+            status=$?
+            trap - EXIT
+            # BuildKit snapshots can contain read-only package caches or mapped
+            # UIDs. The disposable container owns their physical removal.
+            if ! rm -rf "$DOCKER_CONFIG" "$work/image.tar" "$work/metadata.json" "$work/runc"; then
+              printf '%s\n' 'Failed to remove credentials or build outputs' >&2
+              status=1
+            fi
+            exit "$status"
+          }
+          trap cleanup EXIT
+          trap 'exit 129' HUP
+          trap 'exit 130' INT
+          trap 'exit 143' TERM
+          test -n "$REGISTRY_USERNAME" && test -n "$REGISTRY_PASSWORD" || fail 'Publishing requires explicit registry credentials'
+          registry=${BUILD_IMAGE%%/*}
+          auth=$(printf '%s:%s' "$REGISTRY_USERNAME" "$REGISTRY_PASSWORD" | base64 | tr -d '\n')
+          printf '{"auths":{"%s":{"auth":"%s"}}}\n' "$registry" "$auth" > "$DOCKER_CONFIG/config.json"
+          chmod 600 "$DOCKER_CONFIG/config.json"
+          output="type=image,\"name=$BUILD_IMAGE:$RELEASE_TAG,$BUILD_IMAGE:sha-$BUILD_SHA\",push=true"
+          unset REGISTRY_USERNAME REGISTRY_PASSWORD auth
+          test -x /usr/bin/buildkit-qemu-aarch64 || fail 'Missing built-in ARM64 emulator'
+          # Work around hosts denying keyctl; the job mounts no host socket.
+          cat > "$work/runc" <<'RUNC'
+          #!/bin/sh
+          count=$#
+          while [ "$count" -gt 0 ]; do
+            arg=$1; shift
+            set -- "$@" "$arg"
+            if [ "$arg" = run ]; then set -- "$@" --no-new-keyring; fi
+            count=$((count - 1))
+          done
+          exec /usr/bin/buildkit-runc "$@"
+          RUNC
+          chmod 700 "$work/runc"
+          export BUILDKITD_FLAGS="--oci-worker-no-process-sandbox --oci-worker-snapshotter=native --oci-worker-binary=$work/runc --root $work/state"
+          buildctl-daemonless.sh build --frontend dockerfile.v0 \
+            --local "context=$context" --local "dockerfile=$(dirname "$dockerfile")" \
+            --opt "filename=$(basename "$dockerfile")" --opt "platform=$BUILD_PLATFORMS" \
+            --opt "label:org.opencontainers.image.source=https://github.com/$GITHUB_REPOSITORY" \
+            --opt "label:org.opencontainers.image.revision=$BUILD_SHA" \
+            --opt "label:org.opencontainers.image.version=$RELEASE_TAG" \
+            --output "$output" --metadata-file "$work/metadata.json"
+          digest=$(sed -n 's/^[[:space:]]*"containerimage.digest": "\(sha256:[a-f0-9]*\)".*/\1/p' "$work/metadata.json")
+          printf '%s\n' "$digest" | grep -Eq '^sha256:[a-f0-9]{64}$' || fail 'Missing image digest'
+          printf 'digest=%s\nimage=%s@%s\n' "$digest" "$BUILD_IMAGE" "$digest" >> "$GITHUB_OUTPUT"
+      - name: Remove disposable checkout
+        if: always()
+        env:
+          CHECKOUT_DIRECTORY: ${{ steps.checkout.outputs.directory }}
+        run: |
+          case "$CHECKOUT_DIRECTORY" in
+            /tmp/ci-checkout.*) rm -rf "$CHECKOUT_DIRECTORY" ;;
+          esac

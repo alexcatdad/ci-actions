@@ -6,6 +6,26 @@ on:
 permissions:
   contents: read
 jobs:
+  contracts:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version: 1.4.2
+      - name: Validate release and cleanup contracts
+        run: bun test tests/tag-release.test.ts
+      - name: Validate workflow syntax and shell contracts
+        run: go run github.com/rhysd/actionlint/cmd/actionlint@v1.7.12 .github/workflows/*.yml
+  multiarch:
+    uses: ./.github/workflows/image-build.yml
+    with:
+      context: tests/multiarch
+      dockerfile: tests/multiarch/Dockerfile
+      image: ghcr.io/alexcatdad/ci-actions/multiarch-fixture
+      platforms: linux/amd64,linux/arm64
   fixture:
     uses: ./.github/workflows/image-build.yml
     with:

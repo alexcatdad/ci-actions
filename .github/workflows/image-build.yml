@@ -23,6 +23,10 @@ on:
         description: Push a commit tag; allowed only for a push to the caller default branch
         type: boolean
         default: false
+      platforms:
+        description: One native architecture or the supported AMD64/ARM64 pair
+        type: string
+        default: linux/amd64
     secrets:
       registry-username:
         required: false
@@ -109,12 +113,17 @@ jobs:
           BUILD_REF: ${{ github.ref }}
           BUILD_DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
           BUILD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+          BUILD_PLATFORMS: ${{ inputs.platforms }}
           REGISTRY_USERNAME: ${{ inputs.publish && secrets.registry-username || '' }}
           REGISTRY_PASSWORD: ${{ inputs.publish && secrets.registry-password || '' }}
         run: |
           set -eu
           export HOME=/home/user
           fail() { printf '%s\n' "$1" >&2; exit 1; }
+          case "$BUILD_PLATFORMS" in
+            linux/amd64|linux/amd64,linux/arm64) ;;
+            *) fail 'Unsupported build platforms' ;;
+          esac
           # Only local paths beneath the checkout. Reject symlink escapes too.
           case "$BUILD_CONTEXT:$BUILD_DOCKERFILE" in *[!a-zA-Z0-9_./:-]*) fail 'Unsupported build path' ;; esac
           case "$BUILD_CONTEXT" in /*) fail 'Context must be relative' ;; esac
@@ -172,7 +181,7 @@ jobs:
           export BUILDKITD_FLAGS="--oci-worker-no-process-sandbox --oci-worker-snapshotter=native --oci-worker-binary=$work/runc --root $work/state"
           buildctl-daemonless.sh build --frontend dockerfile.v0 \
             --local "context=$context" --local "dockerfile=$(dirname "$dockerfile")" \
-            --opt "filename=$(basename "$dockerfile")" --opt platform=linux/amd64 \
+            --opt "filename=$(basename "$dockerfile")" --opt "platform=$BUILD_PLATFORMS" \
             --opt "label:org.opencontainers.image.source=https://github.com/$GITHUB_REPOSITORY" \
             --opt "label:org.opencontainers.image.revision=$BUILD_SHA" \
             --output "$output" --metadata-file "$work/metadata.json"

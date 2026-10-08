@@ -1,7 +1,9 @@
 # Shared CI workflows
 
 Small public helpers for project-owned GitHub Actions workflows. This first
-workflow builds one Linux amd64 Dockerfile with rootless BuildKit. Callers keep
+workflow builds one Linux amd64 Dockerfile with rootless BuildKit, with an optional
+AMD64/ARM64 pair. A separate workflow preserves annotated-tag image releases.
+Callers keep
 their triggers, tests, release policy and deployment. Go and Node checks stay
 in each project until repeated migrations justify extracting them.
 
@@ -97,6 +99,51 @@ executes `RUN`, checks fixture bytes, creates a read-only package cache and expo
 an OCI image. It then asserts
 the immutable output. Publishing requires its own registry smoke test before
 production adoption.
+
+## Multiarch and annotated-tag releases
+
+The ordinary image helper accepts the additional platforms input with either
+linux/amd64 (default) or the exact linux/amd64,linux/arm64 pair. Other combinations
+are rejected. The pinned image includes BuildKit-specific QEMU, so no global
+binfmt registration or additional capabilities are needed. The hosted fixture
+executes shell processes on both architectures without publishing.
+
+The separate image-tag-release.yml reusable workflow takes runner, release-tag,
+context, dockerfile and image inputs, with explicit registry-username and
+registry-password secrets. Pass the caller actor and GITHUB_TOKEN respectively;
+grant contents read and packages write in that caller job. Omit runner for a
+public project or set homelab for an enrolled private project.
+
+It accepts only the matching tag push or a manual run from the caller default
+branch. The tag must exist, be annotated and peel to a commit reachable from
+that default branch. The GHCR image path must belong to the caller repository
+or a package beneath it. Pull requests and arbitrary source SHA inputs are rejected.
+
+Read-only preflight uses a package-read GitHub token and checks both the release
+and sha-commit aliases. Only two confirmed 404s permit initial publication;
+authorization, network and registry failures block it. Matching aliases are reused
+after verifying the AMD64/ARM64 index, matching platform configs and each image's
+source/revision/version labels.
+Partial or inconsistent aliases fail and require a new patch tag and source commit.
+The helper serializes all its publications per caller image; callers must keep
+other registry writers from changing these immutable aliases.
+
+A fresh disposable rootless builder checks the annotated tag object again and
+publishes both aliases to one AMD64/ARM64 index. Outputs are digest, immutable
+image and resolved source-sha. Credentials and temporary outputs are removed
+on success, failure or signal; container teardown removes BuildKit state.
+
+The caller retains its release-existence check, package validation, digest bundle
+generation and GitHub release creation without replacing assets. Use separate
+caller jobs when collecting multiple image outputs; matrix workflow outputs can
+collapse to the last completion. The helper creates no GitHub releases, changes
+no repository tags and deploys nothing.
+
+Contract tests execute the actual source-validation, read-only registry preflight
+and cleanup scripts against synthetic local Git and registry data. Tagged
+publication and project release acceptance remain separate from nonpublishing tests.
+References: [multi-platform builds](https://github.com/moby/buildkit/blob/v0.33.1/docs/multi-platform.md)
+and [BuildKit-specific emulators](https://github.com/tonistiigi/binfmt#buildkit-target).
 
 References: [GitHub reusable workflows](https://docs.github.com/en/actions/how-tos/reuse-automations/reuse-workflows),
 [BuildKit rootless operation](https://github.com/moby/buildkit/blob/v0.33.1/docs/rootless.md),
