@@ -11,7 +11,7 @@ jobs:
     with:
       context: tests/image
       dockerfile: tests/image/Dockerfile
-      image: ghcr.io/alexcatdad/ci-actions-fixture
+      image: ghcr.io/alexcatdad/service--worker__fixture
   digest:
     needs: fixture
     runs-on: ubuntu-latest
@@ -23,4 +23,4 @@ jobs:
         run: |
           set -eu
           [[ "$DIGEST" =~ ^sha256:[a-f0-9]{64}$ ]]
-          test "$IMAGE" = "ghcr.io/alexcatdad/ci-actions-fixture@$DIGEST"
+          test "$IMAGE" = "ghcr.io/alexcatdad/service--worker__fixture@$DIGEST"

@@ -125,7 +125,7 @@ jobs:
           case "$context/" in "$workspace/"*) ;; *) fail 'Context escapes checkout' ;; esac
           case "$dockerfile" in "$workspace/"*) ;; *) fail 'Dockerfile escapes checkout' ;; esac
           test -d "$context" && test -f "$dockerfile" || fail 'Build paths do not exist'
-          printf '%s\n' "$BUILD_IMAGE" | grep -Eq '^[a-z0-9]+([.-][a-z0-9]+)*(:[0-9]+)?/[a-z0-9]+([._-][a-z0-9]+)*(/[a-z0-9]+([._-][a-z0-9]+)*)*$' || fail 'Invalid registry/image name'
+          printf '%s\n' "$BUILD_IMAGE" | grep -Eq '^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)*(:[0-9]+)?/[a-z0-9]+(([._]|__|-+)[a-z0-9]+)*(/[a-z0-9]+(([._]|__|-+)[a-z0-9]+)*)*$' || fail 'Invalid registry/image name'
           work=$(mktemp -d)
           export DOCKER_CONFIG="$work/auth"
           mkdir -p "$DOCKER_CONFIG"
