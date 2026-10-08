@@ -262,7 +262,7 @@ jobs:
           dockerfile=$(realpath "$CHECKOUT_DIRECTORY/$BUILD_DOCKERFILE")
           case "$context/" in "$workspace/"*) ;; *) fail 'Context escapes checkout' ;; esac
           case "$dockerfile" in "$workspace/"*) ;; *) fail 'Dockerfile escapes checkout' ;; esac
-          test -d "$context" && test -f "$dockerfile" || fail 'Build paths do not exist'
+          if ! test -d "$context" || ! test -f "$dockerfile"; then fail 'Build paths do not exist'; fi
           printf '%s\n' "$BUILD_IMAGE" | grep -Eq '^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)*(:[0-9]+)?/[a-z0-9]+(([._]|__|-+)[a-z0-9]+)*(/[a-z0-9]+(([._]|__|-+)[a-z0-9]+)*)*$' || fail 'Invalid registry/image name'
           work=$(mktemp -d)
           export DOCKER_CONFIG="$work/auth"
@@ -282,7 +282,7 @@ jobs:
           trap 'exit 129' HUP
           trap 'exit 130' INT
           trap 'exit 143' TERM
-          test -n "$REGISTRY_USERNAME" && test -n "$REGISTRY_PASSWORD" || fail 'Publishing requires explicit registry credentials'
+          if ! test -n "$REGISTRY_USERNAME" || ! test -n "$REGISTRY_PASSWORD"; then fail 'Publishing requires explicit registry credentials'; fi
           registry=${BUILD_IMAGE%%/*}
           auth=$(printf '%s:%s' "$REGISTRY_USERNAME" "$REGISTRY_PASSWORD" | base64 | tr -d '\n')
           printf '{"auths":{"%s":{"auth":"%s"}}}\n' "$registry" "$auth" > "$DOCKER_CONFIG/config.json"
