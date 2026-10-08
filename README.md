@@ -48,7 +48,7 @@ reference for a subsequent project-owned deployment job.
 ```yaml
 jobs:
   publish:
-    if: github.event_name == 'push' && github.ref_name == github.event.repository.default_branch
+    if: github.event_name == 'push' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
     permissions:
       contents: read
       packages: write # needed only when GITHUB_TOKEN publishes to GHCR

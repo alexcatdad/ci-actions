@@ -50,7 +50,7 @@ jobs:
         # Hosted file commands belong to the host runner UID. A root shim fixes
         # only those files before dropping to the rootless image user. ARC is
         # already UID 1000 and goes directly to the nonroot shell.
-        shell: /tmp/ci-nonroot-shell {0}
+        shell: sh /tmp/ci-nonroot-shell {0}
     outputs:
       digest: ${{ steps.build.outputs.digest }}
       image: ${{ steps.build.outputs.image }}
@@ -106,7 +106,7 @@ jobs:
           BUILD_IMAGE: ${{ inputs.image }}
           BUILD_PUBLISH: ${{ inputs.publish }}
           BUILD_EVENT: ${{ github.event_name }}
-          BUILD_REF: ${{ github.ref_name }}
+          BUILD_REF: ${{ github.ref }}
           BUILD_DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
           BUILD_SHA: ${{ github.sha }}
           REGISTRY_USERNAME: ${{ inputs.publish && secrets.registry-username || '' }}
@@ -131,7 +131,7 @@ jobs:
           mkdir -p "$DOCKER_CONFIG"
           trap 'rm -rf "$work"' EXIT HUP INT TERM
           if [ "$BUILD_PUBLISH" = true ]; then
-            test "$BUILD_EVENT" = push && test "$BUILD_REF" = "$BUILD_DEFAULT_BRANCH" || fail 'Publishing requires a push to the default branch'
+            test "$BUILD_EVENT" = push && test "$BUILD_REF" = "refs/heads/$BUILD_DEFAULT_BRANCH" || fail 'Publishing requires a push to the default branch'
             test -n "$REGISTRY_USERNAME" && test -n "$REGISTRY_PASSWORD" || fail 'Publishing requires explicit registry credentials'
             registry=${BUILD_IMAGE%%/*}
             auth=$(printf '%s:%s' "$REGISTRY_USERNAME" "$REGISTRY_PASSWORD" | base64 | tr -d '\n')
