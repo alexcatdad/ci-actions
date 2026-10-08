@@ -47,10 +47,18 @@ jobs:
       image: moby/buildkit:v0.33.1-rootless@sha256:980970b9ed3682d1933cc5bd1b2ebbc00686693e03f571ec3a8f59c376fe2d78
       # Hosted Docker requires these rootless user-namespace allowances. ARC must
       # supply an equivalent scoped pod policy; it does not use these options.
-      options: --user 1000:1000 --security-opt seccomp=unconfined --security-opt apparmor=unconfined
+      options: --user 0:0 --cap-drop ALL --cap-add CHOWN --cap-add SETUID --cap-add SETGID --security-opt seccomp=unconfined --security-opt apparmor=unconfined
     defaults:
       run:
-        shell: sh
+        # Hosted file commands belong to the host runner UID. A root shim fixes
+        # only those files before dropping to the rootless image user. ARC is
+        # already UID 1000 and goes directly to the nonroot shell.
+        shell: >-
+          sh -c 'if [ "$(id -u)" = 0 ]; then
+          for path in "$GITHUB_OUTPUT" "$GITHUB_ENV" "$GITHUB_PATH" "$GITHUB_STEP_SUMMARY"; do
+          [ -z "$path" ] || chown 1000:1000 "$path" || exit; done;
+          exec su -p user -s /bin/sh -c "exec sh \"$1\"";
+          else exec sh "$1"; fi' sh {0}
     outputs:
       digest: ${{ steps.build.outputs.digest }}
       image: ${{ steps.build.outputs.image }}

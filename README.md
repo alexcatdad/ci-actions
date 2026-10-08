@@ -66,8 +66,12 @@ credentials. This workflow deploys nothing and has no production secrets.
 ## Runner requirements and isolation
 
 The exact BuildKit 0.33.1 rootless image digest is pinned. GitHub-hosted execution
-uses a nonprivileged Docker job container as UID/GID 1000 with seccomp/AppArmor
-allowances for nested user namespaces. No Docker socket is mounted in the build
+uses a nonprivileged Docker job container with seccomp/AppArmor allowances for
+nested user namespaces. Each shell step initially fixes ownership of only its
+GitHub file-command files (output, environment, PATH and summary), then immediately
+switches to the image user UID/GID 1000. The temporary root shim has only CHOWN,
+SETUID and SETGID capabilities; checkout, BuildKit and Dockerfile execution always
+run as UID 1000. On ARC, the pod is already UID 1000 and skips the shim. No Docker socket is mounted in the build
 container. Rootless BuildKit uses the native snapshotter and no process sandbox,
 with the upstream runc keyring workaround for hosts that deny `keyctl`.
 
