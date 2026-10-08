@@ -1,0 +1,26 @@
+name: Shared workflow checks
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  fixture:
+    uses: ./.github/workflows/image-build.yml
+    with:
+      context: tests/image
+      dockerfile: tests/image/Dockerfile
+      image: ghcr.io/alexcatdad/service--worker__fixture
+  digest:
+    needs: fixture
+    runs-on: ubuntu-latest
+    steps:
+      - name: Assert immutable output
+        env:
+          DIGEST: ${{ needs.fixture.outputs.digest }}
+          IMAGE: ${{ needs.fixture.outputs.image }}
+        run: |
+          set -eu
+          [[ "$DIGEST" =~ ^sha256:[a-f0-9]{64}$ ]]
+          test "$IMAGE" = "ghcr.io/alexcatdad/service--worker__fixture@$DIGEST"

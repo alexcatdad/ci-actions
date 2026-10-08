@@ -1,0 +1,192 @@
+name: Rootless image build
+
+on:
+  workflow_call:
+    inputs:
+      runner:
+        description: GitHub-hosted label or an isolated rootless-build-capable ARC label
+        type: string
+        default: ubuntu-latest
+      context:
+        description: Repository-relative build context
+        type: string
+        default: .
+      dockerfile:
+        description: Repository-relative Dockerfile
+        type: string
+        default: Dockerfile
+      image:
+        description: Fully qualified lower-case image name, without tag
+        type: string
+        required: true
+      publish:
+        description: Push a commit tag; allowed only for a push to the caller default branch
+        type: boolean
+        default: false
+    secrets:
+      registry-username:
+        required: false
+      registry-password:
+        required: false
+    outputs:
+      digest:
+        description: Immutable image digest
+        value: ${{ jobs.build.outputs.digest }}
+      image:
+        description: Image name at its immutable digest (not available in a registry unless published)
+        value: ${{ jobs.build.outputs.image }}
+
+jobs:
+  build:
+    runs-on: ${{ inputs.runner }}
+    timeout-minutes: 45
+    container:
+      image: moby/buildkit:v0.33.1-rootless@sha256:980970b9ed3682d1933cc5bd1b2ebbc00686693e03f571ec3a8f59c376fe2d78
+      # Hosted Docker requires these rootless user-namespace allowances. ARC must
+      # supply an equivalent scoped pod policy; it does not use these options.
+      options: --user 0:0 --cap-drop ALL --cap-add CHOWN --cap-add SETUID --cap-add SETGID --security-opt seccomp=unconfined --security-opt apparmor=unconfined
+    defaults:
+      run:
+        # Hosted file commands belong to the host runner UID. A root shim fixes
+        # only those files before dropping to the rootless image user. ARC is
+        # already UID 1000 and goes directly to the nonroot shell.
+        shell: sh /tmp/ci-nonroot-shell {0}
+    outputs:
+      digest: ${{ steps.build.outputs.digest }}
+      image: ${{ steps.build.outputs.image }}
+    steps:
+      - name: Prepare nonroot step shell
+        shell: sh
+        run: |
+          set -eu
+          cat > /tmp/ci-nonroot-shell <<'SHELL'
+          #!/bin/sh
+          set -eu
+          if [ "$(id -u)" = 0 ]; then
+            for path in "$GITHUB_OUTPUT" "$GITHUB_ENV" "$GITHUB_PATH" "$GITHUB_STEP_SUMMARY"; do
+              [ -z "$path" ] || chown 1000:1000 "$path"
+            done
+            export CI_STEP_SCRIPT="$1"
+            # shellcheck disable=SC2016
+            exec su -p user -s /bin/sh -c 'exec sh "$CI_STEP_SCRIPT"'
+          fi
+          exec sh "$1"
+          SHELL
+          chmod 755 /tmp/ci-nonroot-shell
+      - name: Checkout caller without persisted credentials
+        id: checkout
+        env:
+          CHECKOUT_TOKEN: ${{ github.token }}
+          CHECKOUT_REPOSITORY: ${{ github.repository }}
+          CHECKOUT_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -eu
+          export HOME=/home/user
+          checkout=$(mktemp -d /tmp/ci-checkout.XXXXXX)
+          trap 'rm -rf "$checkout"' EXIT HUP INT TERM
+          cd "$checkout"
+          git init -q
+          git remote add origin "https://github.com/$CHECKOUT_REPOSITORY.git"
+          auth=$(printf 'x-access-token:%s' "$CHECKOUT_TOKEN" | base64 | tr -d '\n')
+          export GIT_CONFIG_COUNT=1
+          export GIT_CONFIG_KEY_0=http.https://github.com/.extraheader
+          export GIT_CONFIG_VALUE_0="AUTHORIZATION: basic $auth"
+          git fetch --no-tags --depth=1 origin "$CHECKOUT_SHA"
+          unset GIT_CONFIG_COUNT GIT_CONFIG_KEY_0 GIT_CONFIG_VALUE_0 CHECKOUT_TOKEN auth
+          git checkout -q --detach FETCH_HEAD
+          test "$(git rev-parse HEAD)" = "$CHECKOUT_SHA"
+          printf 'directory=%s\n' "$checkout" >> "$GITHUB_OUTPUT"
+          trap - EXIT HUP INT TERM
+      - name: Build and optionally publish
+        id: build
+        env:
+          CHECKOUT_DIRECTORY: ${{ steps.checkout.outputs.directory }}
+          BUILD_CONTEXT: ${{ inputs.context }}
+          BUILD_DOCKERFILE: ${{ inputs.dockerfile }}
+          BUILD_IMAGE: ${{ inputs.image }}
+          BUILD_PUBLISH: ${{ inputs.publish }}
+          BUILD_EVENT: ${{ github.event_name }}
+          BUILD_REF: ${{ github.ref }}
+          BUILD_DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          BUILD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+          REGISTRY_USERNAME: ${{ inputs.publish && secrets.registry-username || '' }}
+          REGISTRY_PASSWORD: ${{ inputs.publish && secrets.registry-password || '' }}
+        run: |
+          set -eu
+          export HOME=/home/user
+          fail() { printf '%s\n' "$1" >&2; exit 1; }
+          # Only local paths beneath the checkout. Reject symlink escapes too.
+          case "$BUILD_CONTEXT:$BUILD_DOCKERFILE" in *[!a-zA-Z0-9_./:-]*) fail 'Unsupported build path' ;; esac
+          case "$BUILD_CONTEXT" in /*) fail 'Context must be relative' ;; esac
+          case "$BUILD_DOCKERFILE" in /*) fail 'Dockerfile must be relative' ;; esac
+          workspace=$(realpath "$CHECKOUT_DIRECTORY")
+          context=$(realpath "$CHECKOUT_DIRECTORY/$BUILD_CONTEXT")
+          dockerfile=$(realpath "$CHECKOUT_DIRECTORY/$BUILD_DOCKERFILE")
+          case "$context/" in "$workspace/"*) ;; *) fail 'Context escapes checkout' ;; esac
+          case "$dockerfile" in "$workspace/"*) ;; *) fail 'Dockerfile escapes checkout' ;; esac
+          test -d "$context" && test -f "$dockerfile" || fail 'Build paths do not exist'
+          printf '%s\n' "$BUILD_IMAGE" | grep -Eq '^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)*(:[0-9]+)?/[a-z0-9]+(([._]|__|-+)[a-z0-9]+)*(/[a-z0-9]+(([._]|__|-+)[a-z0-9]+)*)*$' || fail 'Invalid registry/image name'
+          work=$(mktemp -d)
+          export DOCKER_CONFIG="$work/auth"
+          mkdir -p "$DOCKER_CONFIG"
+          cleanup() {
+            status=$?
+            trap - EXIT
+            # BuildKit snapshots can contain read-only package caches or mapped
+            # UIDs. The disposable container owns their physical removal.
+            if ! rm -rf "$DOCKER_CONFIG" "$work/image.tar" "$work/metadata.json" "$work/runc"; then
+              printf '%s\n' 'Failed to remove credentials or build outputs' >&2
+              status=1
+            fi
+            exit "$status"
+          }
+          trap cleanup EXIT
+          trap 'exit 129' HUP
+          trap 'exit 130' INT
+          trap 'exit 143' TERM
+          if [ "$BUILD_PUBLISH" = true ]; then
+            test "$BUILD_EVENT" = push && test "$BUILD_REF" = "refs/heads/$BUILD_DEFAULT_BRANCH" || fail 'Publishing requires a push to the default branch'
+            test -n "$REGISTRY_USERNAME" && test -n "$REGISTRY_PASSWORD" || fail 'Publishing requires explicit registry credentials'
+            registry=${BUILD_IMAGE%%/*}
+            auth=$(printf '%s:%s' "$REGISTRY_USERNAME" "$REGISTRY_PASSWORD" | base64 | tr -d '\n')
+            printf '{"auths":{"%s":{"auth":"%s"}}}\n' "$registry" "$auth" > "$DOCKER_CONFIG/config.json"
+            chmod 600 "$DOCKER_CONFIG/config.json"
+            output="type=image,name=$BUILD_IMAGE:sha-$BUILD_SHA,push=true"
+          else
+            output="type=oci,dest=$work/image.tar"
+          fi
+          unset REGISTRY_USERNAME REGISTRY_PASSWORD auth
+          # Work around hosts denying keyctl; the job mounts no host socket.
+          cat > "$work/runc" <<'RUNC'
+          #!/bin/sh
+          count=$#
+          while [ "$count" -gt 0 ]; do
+            arg=$1; shift
+            set -- "$@" "$arg"
+            if [ "$arg" = run ]; then set -- "$@" --no-new-keyring; fi
+            count=$((count - 1))
+          done
+          exec /usr/bin/buildkit-runc "$@"
+          RUNC
+          chmod 700 "$work/runc"
+          export BUILDKITD_FLAGS="--oci-worker-no-process-sandbox --oci-worker-snapshotter=native --oci-worker-binary=$work/runc --root $work/state"
+          buildctl-daemonless.sh build --frontend dockerfile.v0 \
+            --local "context=$context" --local "dockerfile=$(dirname "$dockerfile")" \
+            --opt "filename=$(basename "$dockerfile")" --opt platform=linux/amd64 \
+            --opt "label:org.opencontainers.image.source=https://github.com/$GITHUB_REPOSITORY" \
+            --opt "label:org.opencontainers.image.revision=$BUILD_SHA" \
+            --output "$output" --metadata-file "$work/metadata.json"
+          digest=$(sed -n 's/^[[:space:]]*"containerimage.digest": "\(sha256:[a-f0-9]*\)".*/\1/p' "$work/metadata.json")
+          printf '%s\n' "$digest" | grep -Eq '^sha256:[a-f0-9]{64}$' || fail 'Missing image digest'
+          if [ "$BUILD_PUBLISH" != true ]; then
+            tar -tf "$work/image.tar" | grep -qx index.json || fail 'Missing OCI index'
+          fi
+          printf 'digest=%s\nimage=%s@%s\n' "$digest" "$BUILD_IMAGE" "$digest" >> "$GITHUB_OUTPUT"
+      - name: Remove disposable checkout
+        if: always()
+        env:
+          CHECKOUT_DIRECTORY: ${{ steps.checkout.outputs.directory }}
+        run: |
+          case "$CHECKOUT_DIRECTORY" in
+            /tmp/ci-checkout.*) rm -rf "$CHECKOUT_DIRECTORY" ;;
+          esac
