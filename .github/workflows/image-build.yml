@@ -108,7 +108,7 @@ jobs:
           BUILD_EVENT: ${{ github.event_name }}
           BUILD_REF: ${{ github.ref }}
           BUILD_DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
-          BUILD_SHA: ${{ github.sha }}
+          BUILD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
           REGISTRY_USERNAME: ${{ inputs.publish && secrets.registry-username || '' }}
           REGISTRY_PASSWORD: ${{ inputs.publish && secrets.registry-password || '' }}
         run: |
@@ -159,6 +159,8 @@ jobs:
           buildctl-daemonless.sh build --frontend dockerfile.v0 \
             --local "context=$context" --local "dockerfile=$(dirname "$dockerfile")" \
             --opt "filename=$(basename "$dockerfile")" --opt platform=linux/amd64 \
+            --opt "label:org.opencontainers.image.source=https://github.com/$GITHUB_REPOSITORY" \
+            --opt "label:org.opencontainers.image.revision=$BUILD_SHA" \
             --output "$output" --metadata-file "$work/metadata.json"
           digest=$(sed -n 's/^[[:space:]]*"containerimage.digest": "\(sha256:[a-f0-9]*\)".*/\1/p' "$work/metadata.json")
           printf '%s\n' "$digest" | grep -Eq '^sha256:[a-f0-9]{64}$' || fail 'Missing image digest'
