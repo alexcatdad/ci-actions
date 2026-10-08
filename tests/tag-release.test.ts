@@ -172,7 +172,7 @@ describe('actual read-only immutable registry gate', () => {
 });
 
 describe('actual build cleanup and policy', () => {
-  const cleanup = buildScript.slice(buildScript.indexOf('cleanup() {'), buildScript.indexOf('test -n "$REGISTRY_USERNAME"'));
+  const cleanup = buildScript.slice(buildScript.indexOf('cleanup() {'), buildScript.indexOf('if ! test -n "$REGISTRY_USERNAME"'));
   test('EXIT and signals preserve status while removing credentials and outputs', async () => {
     for (const [finish, status] of [['exit 0', 0], ['exit 42', 42], ['kill -HUP $$', 129], ['kill -INT $$', 130], ['kill -TERM $$', 143]] as const) {
       const work = join(temporary, 'cleanup-' + sequence++);
