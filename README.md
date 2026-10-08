@@ -34,9 +34,11 @@ it persists no checkout credentials. Checkout uses a disposable `/tmp` directory
 rather than relying on host workspace ownership. Submodules and Git LFS are not fetched.
 
 With `publish: false` (the default), BuildKit exports and verifies a disposable
-OCI image, returning `digest` and `image` outputs. The OCI file is removed at job
-completion; the image is not available from a registry. Every job has fresh local
-state; no shared or remote cache is configured.
+OCI image, returning `digest` and `image` outputs. Credentials and build outputs
+are removed by the build-step exit handler; the image is not available from a
+registry. BuildKit snapshot state, including read-only package caches and mapped
+UID files, is physically removed when the disposable container is torn down.
+Every job has fresh local state; no shared or remote cache is configured.
 
 ## Publish from the default branch
 
@@ -91,7 +93,8 @@ sandbox, Dockerfile processes share the builder's PID namespace, so do not
 combine builds from different projects in one job or daemon.
 
 `checks.yml` calls the reusable workflow against a synthetic Dockerfile that
-executes `RUN`, checks fixture bytes and exports an OCI image. It then asserts
+executes `RUN`, checks fixture bytes, creates a read-only package cache and exports
+an OCI image. It then asserts
 the immutable output. Publishing requires its own registry smoke test before
 production adoption.
 

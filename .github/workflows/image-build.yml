@@ -129,7 +129,21 @@ jobs:
           work=$(mktemp -d)
           export DOCKER_CONFIG="$work/auth"
           mkdir -p "$DOCKER_CONFIG"
-          trap 'rm -rf "$work"' EXIT HUP INT TERM
+          cleanup() {
+            status=$?
+            trap - EXIT
+            # BuildKit snapshots can contain read-only package caches or mapped
+            # UIDs. The disposable container owns their physical removal.
+            if ! rm -rf "$DOCKER_CONFIG" "$work/image.tar" "$work/metadata.json" "$work/runc"; then
+              printf '%s\n' 'Failed to remove credentials or build outputs' >&2
+              status=1
+            fi
+            exit "$status"
+          }
+          trap cleanup EXIT
+          trap 'exit 129' HUP
+          trap 'exit 130' INT
+          trap 'exit 143' TERM
           if [ "$BUILD_PUBLISH" = true ]; then
             test "$BUILD_EVENT" = push && test "$BUILD_REF" = "refs/heads/$BUILD_DEFAULT_BRANCH" || fail 'Publishing requires a push to the default branch'
             test -n "$REGISTRY_USERNAME" && test -n "$REGISTRY_PASSWORD" || fail 'Publishing requires explicit registry credentials'
