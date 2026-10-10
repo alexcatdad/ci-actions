@@ -1,0 +1,54 @@
+name: Fresh runner cache acceptance
+on:
+  workflow_dispatch:
+    inputs:
+      runner:
+        description: Trusted runner label
+        type: choice
+        options:
+          - homelab
+          - ubuntu-latest
+        default: ubuntu-latest
+permissions:
+  contents: read
+# Serialize writers to this dedicated synthetic scope on this repository/ref.
+concurrency:
+  group: cache-acceptance-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  cold:
+    uses: ./.github/workflows/image-build.yml
+    with:
+      runner: ${{ inputs.runner }}
+      context: tests/image
+      dockerfile: tests/image/Dockerfile
+      image: ghcr.io/alexcatdad/ci-actions/cache-acceptance
+      cache-import: false
+  warm:
+    needs: cold
+    uses: ./.github/workflows/image-build.yml
+    with:
+      runner: ${{ inputs.runner }}
+      context: tests/image
+      dockerfile: tests/image/Dockerfile
+      image: ghcr.io/alexcatdad/ci-actions/cache-acceptance
+  evidence:
+    needs: [cold, warm]
+    runs-on: ubuntu-latest
+    env:
+      COLD_DIGEST: ${{ needs.cold.outputs.digest }}
+      WARM_DIGEST: ${{ needs.warm.outputs.digest }}
+      COLD_SECONDS: ${{ needs.cold.outputs.build-seconds }}
+      WARM_SECONDS: ${{ needs.warm.outputs.build-seconds }}
+      COLD_CACHED: ${{ needs.cold.outputs.cached-steps }}
+      WARM_CACHED: ${{ needs.warm.outputs.cached-steps }}
+    steps:
+      - name: Assert fresh runner cache reuse and report timings
+        run: |
+          set -eu
+          test "$COLD_DIGEST" = "$WARM_DIGEST"
+          test "$COLD_CACHED" -eq 0
+          test "$WARM_CACHED" -ge 2
+          # shellcheck disable=SC2016
+
+          printf '### Same commit, separate disposable runners\n\n| Build | Seconds including transfer | Cached steps |\n| --- | --- | --- |\n| Cold | %s | %s |\n| Warm | %s | %s |\n\nImage digest: `%s`\n' "$COLD_SECONDS" "$COLD_CACHED" "$WARM_SECONDS" "$WARM_CACHED" "$WARM_DIGEST" >> "$GITHUB_STEP_SUMMARY"

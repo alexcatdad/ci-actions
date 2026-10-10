@@ -27,12 +27,26 @@ on:
         description: One native architecture or the supported AMD64/ARM64 pair
         type: string
         default: linux/amd64
+      cache:
+        description: Enable repository and ref scoped GitHub Actions v2 layer cache
+        type: boolean
+        default: true
+      cache-import:
+        description: Import previous layers; false measures a cold build while still exporting
+        type: boolean
+        default: true
     secrets:
       registry-username:
         required: false
       registry-password:
         required: false
     outputs:
+      cached-steps:
+        description: Number of BuildKit steps reported CACHED
+        value: ${{ jobs.build.outputs.cached-steps }}
+      build-seconds:
+        description: Wall seconds including cache import and export
+        value: ${{ jobs.build.outputs.build-seconds }}
       digest:
         description: Immutable image digest
         value: ${{ jobs.build.outputs.digest }}
@@ -58,7 +72,13 @@ jobs:
     outputs:
       digest: ${{ steps.build.outputs.digest }}
       image: ${{ steps.build.outputs.image }}
+      cached-steps: ${{ steps.build.outputs.cached-steps }}
+      build-seconds: ${{ steps.build.outputs.build-seconds }}
     steps:
+      - name: Reject untrusted homelab pull requests before checkout
+        if: inputs.runner == 'homelab' && github.event.pull_request.head.repo.full_name != '' && github.event.pull_request.head.repo.full_name != github.repository
+        shell: sh
+        run: exit 1
       - name: Prepare nonroot step shell
         shell: sh
         run: |
@@ -77,6 +97,11 @@ jobs:
           exec sh "$1"
           SHELL
           chmod 755 /tmp/ci-nonroot-shell
+      - name: Expose GitHub Actions cache runtime
+        id: cache-runtime
+        if: inputs.cache && (github.event.pull_request.head.repo.full_name == '' || github.event.pull_request.head.repo.full_name == github.repository)
+        continue-on-error: true
+        uses: alexcatdad/ci-actions/.github/actions/buildkit-cache-runtime@3ceab9b1034e106316d1c40f142bb13c97370004
       - name: Checkout caller without persisted credentials
         id: checkout
         env:
@@ -113,6 +138,9 @@ jobs:
           BUILD_REF: ${{ github.ref }}
           BUILD_DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
           BUILD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+          BUILD_CACHE: ${{ inputs.cache && (github.event.pull_request.head.repo.full_name == '' || github.event.pull_request.head.repo.full_name == github.repository) }}
+          BUILD_CACHE_IMPORT: ${{ inputs.cache-import }}
+          CACHE_RUNTIME_MODE: ${{ steps.cache-runtime.outputs.mode }}
           BUILD_PLATFORMS: ${{ inputs.platforms }}
           REGISTRY_USERNAME: ${{ inputs.publish && secrets.registry-username || '' }}
           REGISTRY_PASSWORD: ${{ inputs.publish && secrets.registry-password || '' }}
@@ -143,7 +171,7 @@ jobs:
             trap - EXIT
             # BuildKit snapshots can contain read-only package caches or mapped
             # UIDs. The disposable container owns their physical removal.
-            if ! rm -rf "$DOCKER_CONFIG" "$work/image.tar" "$work/metadata.json" "$work/runc"; then
+            if ! rm -rf "$DOCKER_CONFIG" "$work/image.tar" "$work/metadata.json" "$work/build.log" "$work/runc"; then
               printf '%s\n' 'Failed to remove credentials or build outputs' >&2
               status=1
             fi
@@ -165,6 +193,11 @@ jobs:
             output="type=oci,dest=$work/image.tar"
           fi
           unset REGISTRY_USERNAME REGISTRY_PASSWORD auth
+          # Fork Dockerfiles may inspect processes in the rootless builder's
+          # shared PID namespace. Never give cold builds cache credentials.
+          if [ "$BUILD_CACHE" != true ] || [ "$CACHE_RUNTIME_MODE" != gha-v2 ]; then
+            unset ACTIONS_RUNTIME_TOKEN ACTIONS_RESULTS_URL
+          fi
           # Work around hosts denying keyctl; the job mounts no host socket.
           cat > "$work/runc" <<'RUNC'
           #!/bin/sh
@@ -179,12 +212,56 @@ jobs:
           RUNC
           chmod 700 "$work/runc"
           export BUILDKITD_FLAGS="--oci-worker-no-process-sandbox --oci-worker-snapshotter=native --oci-worker-binary=$work/runc --root $work/state"
-          buildctl-daemonless.sh build --frontend dockerfile.v0 \
+          # Stable within an image configuration, isolated by GitHub repository/ref access.
+          scope=$(printf '%s\n' "$BUILD_IMAGE" "$BUILD_PLATFORMS" "$BUILD_CONTEXT" "$BUILD_DOCKERFILE" | sha256sum | cut -d ' ' -f 1)
+          set --
+          if [ "$BUILD_CACHE" = true ] && [ "$CACHE_RUNTIME_MODE" = gha-v2 ]; then
+            if [ "$BUILD_CACHE_IMPORT" = true ]; then
+              set -- "$@" --import-cache "type=gha,version=2,scope=$scope,timeout=2m"
+            fi
+            set -- "$@" --export-cache "type=gha,version=2,scope=$scope,mode=max,timeout=2m,ignore-error=true"
+          fi
+          started=$(date +%s)
+          source_epoch=$(git -C "$CHECKOUT_DIRECTORY" show -s --format=%ct "$BUILD_SHA")
+          cpu_before=$(cat /sys/fs/cgroup/cpu.stat 2>/dev/null || true)
+          run_build() {
+            buildctl-daemonless.sh build --progress plain --frontend dockerfile.v0 \
             --local "context=$context" --local "dockerfile=$(dirname "$dockerfile")" \
             --opt "filename=$(basename "$dockerfile")" --opt "platform=$BUILD_PLATFORMS" \
+            --opt "build-arg:SOURCE_DATE_EPOCH=$source_epoch" \
             --opt "label:org.opencontainers.image.source=https://github.com/$GITHUB_REPOSITORY" \
             --opt "label:org.opencontainers.image.revision=$BUILD_SHA" \
-            --output "$output" --metadata-file "$work/metadata.json"
+            --output "$output" --metadata-file "$work/metadata.json" "$@"
+          }
+          cache_import_unavailable() {
+            # Inspect only the terminal solve error, never intermediate warnings.
+            # A compiler error elsewhere in the log cannot trigger this retry.
+            tail -n 1 "$1" | grep -Ei '^ERROR:.*(import.*cache|cache.*import).*(timeout|timed out|401|403|429|5[0-9][0-9]|connection refused|connection reset|no such host|unexpected status|failed to fetch)' >/dev/null
+          }
+          if run_build "$@" > "$work/build.log" 2>&1; then
+            build_status=0
+          else
+            build_status=$?
+          fi
+          if [ "$build_status" -ne 0 ] && [ "$BUILD_CACHE_IMPORT" = true ] && [ "$CACHE_RUNTIME_MODE" = gha-v2 ] && cache_import_unavailable "$work/build.log"; then
+            cat "$work/build.log"
+            printf '%s\n' 'Cache import unavailable; retrying once without remote cache.'
+            CACHE_RUNTIME_MODE=off
+            if run_build > "$work/build.log" 2>&1; then build_status=0; else build_status=$?; fi
+          fi
+          cat "$work/build.log"
+          elapsed=$(( $(date +%s) - started ))
+          cached=$(grep -c '^#[0-9][0-9]* CACHED$' "$work/build.log" || true)
+          printf 'cached-steps=%s\nbuild-seconds=%s\n' "$cached" "$elapsed" >> "$GITHUB_OUTPUT"
+          {
+            printf '### Build cache measurement\n\n- Cache enabled: %s; import: %s; runtime: %s\n- Cached steps: %s\n- Build seconds: %s\n' "$BUILD_CACHE" "$BUILD_CACHE_IMPORT" "$CACHE_RUNTIME_MODE" "$cached" "$elapsed"
+            # shellcheck disable=SC2016
+            printf '\nCPU before:\n```\n%s\n```\nCPU after:\n```\n' "$cpu_before"
+            cat /sys/fs/cgroup/cpu.stat 2>/dev/null || true
+            printf '```\nMemory peak (bytes): '
+            cat /sys/fs/cgroup/memory.peak 2>/dev/null || true
+          } >> "$GITHUB_STEP_SUMMARY"
+          [ "$build_status" -eq 0 ] || exit "$build_status"
           digest=$(sed -n 's/^[[:space:]]*"containerimage.digest": "\(sha256:[a-f0-9]*\)".*/\1/p' "$work/metadata.json")
           printf '%s\n' "$digest" | grep -Eq '^sha256:[a-f0-9]{64}$' || fail 'Missing image digest'
           if [ "$BUILD_PUBLISH" != true ]; then

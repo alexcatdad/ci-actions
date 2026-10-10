@@ -16,7 +16,7 @@ jobs:
         with:
           bun-version: 1.4.2
       - name: Validate release and cleanup contracts
-        run: bun test tests/tag-release.test.ts
+        run: bun test tests
       - name: Validate workflow syntax and shell contracts
         run: go run github.com/rhysd/actionlint/cmd/actionlint@v1.7.12 .github/workflows/*.yml
   multiarch:
