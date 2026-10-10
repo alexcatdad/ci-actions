@@ -76,7 +76,7 @@ jobs:
       build-seconds: ${{ steps.build.outputs.build-seconds }}
     steps:
       - name: Reject untrusted homelab pull requests before checkout
-        if: inputs.runner == 'homelab' && github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository
+        if: inputs.runner == 'homelab' && github.event.pull_request.head.repo.full_name != '' && github.event.pull_request.head.repo.full_name != github.repository
         shell: sh
         run: exit 1
       - name: Prepare nonroot step shell
@@ -99,7 +99,7 @@ jobs:
           chmod 755 /tmp/ci-nonroot-shell
       - name: Expose GitHub Actions cache runtime
         id: cache-runtime
-        if: inputs.cache
+        if: inputs.cache && (github.event.pull_request.head.repo.full_name == '' || github.event.pull_request.head.repo.full_name == github.repository)
         continue-on-error: true
         uses: alexcatdad/ci-actions/.github/actions/buildkit-cache-runtime@3ceab9b1034e106316d1c40f142bb13c97370004
       - name: Checkout caller without persisted credentials
@@ -138,7 +138,7 @@ jobs:
           BUILD_REF: ${{ github.ref }}
           BUILD_DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
           BUILD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
-          BUILD_CACHE: ${{ inputs.cache }}
+          BUILD_CACHE: ${{ inputs.cache && (github.event.pull_request.head.repo.full_name == '' || github.event.pull_request.head.repo.full_name == github.repository) }}
           BUILD_CACHE_IMPORT: ${{ inputs.cache-import }}
           CACHE_RUNTIME_MODE: ${{ steps.cache-runtime.outputs.mode }}
           BUILD_PLATFORMS: ${{ inputs.platforms }}
@@ -193,6 +193,11 @@ jobs:
             output="type=oci,dest=$work/image.tar"
           fi
           unset REGISTRY_USERNAME REGISTRY_PASSWORD auth
+          # Fork Dockerfiles may inspect processes in the rootless builder's
+          # shared PID namespace. Never give cold builds cache credentials.
+          if [ "$BUILD_CACHE" != true ] || [ "$CACHE_RUNTIME_MODE" != gha-v2 ]; then
+            unset ACTIONS_RUNTIME_TOKEN ACTIONS_RESULTS_URL
+          fi
           # Work around hosts denying keyctl; the job mounts no host socket.
           cat > "$work/runc" <<'RUNC'
           #!/bin/sh

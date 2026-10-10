@@ -160,6 +160,12 @@ request cache writes remain confined to the merge ref. Cache entries can contain
 intermediate image files: never copy credentials into a build layer. Cache mounts
 (`RUN --mount=type=cache`) are not persisted by this layer exporter.
 
+Fork pull requests on GitHub-hosted runners build cold: they skip the runtime
+bridge, disable import/export and remove inherited runtime credentials before
+starting BuildKit. Homelab rejects fork pull requests before checkout. Only
+trusted repository-owned source builds receive cache runtime credentials because
+Dockerfile processes share the rootless builder's PID namespace.
+
 Set `cache: false` for a complete cache bypass. Set `cache-import: false` to build
 cold and still export for a subsequent fresh runner. A SHA-pinned, owned JavaScript
 bridge masks the ephemeral job runtime token before exposing it through GitHub's

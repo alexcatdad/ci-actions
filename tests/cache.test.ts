@@ -72,3 +72,32 @@ describe('cache import failure cold fallback', () => {
     }
   });
 });
+
+describe('fork credential boundary', () => {
+  const bridgeGate=steps.find((s:any)=>s.id==='cache-runtime').if;
+  const cacheGate=steps.find((s:any)=>s.id==='build').env.BUILD_CACHE.slice(3,-2).trim();
+  function allowed(expression:string, event:string, head:string, enabled=true) {
+    const values:Record<string, unknown>={'inputs.cache':enabled,'github.event_name':event,'github.event.pull_request.head.repo.full_name':head,'github.repository':'synthetic/owner'};
+    const js=expression.replace(/github\.event\.pull_request\.head\.repo\.full_name|github\.event_name|github\.repository|inputs\.cache/g, key=>JSON.stringify(values[key]));
+    return Function('return ('+js+')')();
+  }
+  test('both credential bridge and cache configuration reject fork heads', () => {
+    for(const gate of [bridgeGate, cacheGate]) {
+      expect(allowed(gate,'pull_request','synthetic/fork')).toBe(false);
+      expect(allowed(gate,'pull_request_target','synthetic/fork')).toBe(false);
+      expect(allowed(gate,'pull_request','synthetic/owner')).toBe(true);
+      expect(allowed(gate,'push','')).toBe(true);
+      expect(allowed(gate,'push','',false)).toBe(false);
+    }
+    expect(cacheArguments({BUILD_CACHE:'false',CACHE_RUNTIME_MODE:'gha-v2'}).stdout.toString().trim()).toBe('');
+  });
+  test('actual shell removes inherited credentials before starting daemon for cold builds', () => {
+    const start=build.indexOf('if [ "$BUILD_CACHE" != true ]');
+    const clear=build.slice(start,build.indexOf('# Work around hosts denying keyctl',start));
+    expect(start).toBeLessThan(build.indexOf('run_build()'));
+    for(const env of [{BUILD_CACHE:'false',CACHE_RUNTIME_MODE:'gha-v2'}, {BUILD_CACHE:'true',CACHE_RUNTIME_MODE:'off'}]) {
+      const result=Bun.spawnSync({cmd:['sh','-c',clear+'\nprintf "%s:%s" "${ACTIONS_RUNTIME_TOKEN-unset}" "${ACTIONS_RESULTS_URL-unset}"'],stdout:'pipe',stderr:'pipe',env:{...process.env,ACTIONS_RUNTIME_TOKEN:'synthetic-secret',ACTIONS_RESULTS_URL:'https://x.actions.githubusercontent.com',...env}});
+      expect(result.exitCode).toBe(0); expect(result.stdout.toString()).toBe('unset:unset');
+    }
+  });
+});
