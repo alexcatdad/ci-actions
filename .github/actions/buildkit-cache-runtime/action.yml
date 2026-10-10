@@ -1,0 +1,8 @@
+name: BuildKit cache runtime
+description: Expose the job-scoped GitHub Actions v2 cache credentials to BuildKit
+outputs:
+  mode:
+    description: gha-v2 when validated runtime credentials are available, otherwise off
+runs:
+  using: node24
+  main: index.cjs
