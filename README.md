@@ -40,7 +40,7 @@ OCI image, returning `digest` and `image` outputs. Credentials and build outputs
 are removed by the build-step exit handler; the image is not available from a
 registry. BuildKit snapshot state, including read-only package caches and mapped
 UID files, is physically removed when the disposable container is torn down.
-Every job has fresh local state; no shared or remote cache is configured.
+Every job has fresh local state; ordinary builds reuse repository-scoped remote layer cache as described below.
 
 ## Publish from the default branch
 
@@ -148,3 +148,51 @@ and [BuildKit-specific emulators](https://github.com/tonistiigi/binfmt#buildkit-
 References: [GitHub reusable workflows](https://docs.github.com/en/actions/how-tos/reuse-automations/reuse-workflows),
 [BuildKit rootless operation](https://github.com/moby/buildkit/blob/v0.33.1/docs/rootless.md),
 [daemonless builds](https://github.com/moby/buildkit/tree/v0.33.1/examples/buildctl-daemonless).
+
+## Durable image layer cache
+
+Ordinary image builds enable GitHub Actions cache v2 by default. GitHub owns the
+storage, repository access boundary, ref visibility, quota and eviction; runners
+retain no shared disk state. The scope hashes image, platform, context and
+Dockerfile paths, so one image configuration cannot replace another's cache.
+GitHub permits branch jobs to read their current/default branch caches; pull
+request cache writes remain confined to the merge ref. Cache entries can contain
+intermediate image files: never copy credentials into a build layer. Cache mounts
+(`RUN --mount=type=cache`) are not persisted by this layer exporter.
+
+Set `cache: false` for a complete cache bypass. Set `cache-import: false` to build
+cold and still export for a subsequent fresh runner. A SHA-pinned, owned JavaScript
+bridge masks the ephemeral job runtime token before exposing it through GitHub's
+environment file. Missing or invalid runtime metadata falls back to a cold build;
+cache export failures are ignored and transfers are limited to two minutes.
+BuildKit treats missing cache records as misses. A terminal solve error explicitly identifying cache import and a transport,
+authorization, timeout or service failure retries once without remote import or
+export. Compiler and Dockerfile errors remain fatal. Unclassified fatal errors
+also remain fatal; rerun with `cache: false` when investigating a cache outage. Registry publication permissions and default-branch gates
+remain independent of cache access.
+
+### Cache acceptance runbook
+
+1. Run local contracts with `bun test tests` and syntax validation with
+   `go run github.com/rhysd/actionlint/cmd/actionlint@v1.7.12 .github/workflows/*.yml`.
+2. After the reviewed workflow and bridge commit are available, manually run
+   **Fresh runner cache acceptance** on that exact commit using `ubuntu-latest`.
+   The workflow builds the same synthetic fixture twice in separate disposable
+   jobs, first without import and then with import. It publishes no image.
+3. Verify the evidence job passes: equal image digests, zero cold cache hits,
+   at least two warm hits. Record both job links, cached-step counts and measured
+   seconds from the summary. CPU counters and memory peak are in each build's
+   summary when cgroup v2 exposes them; these are whole job-container counters,
+   not isolated Dockerfile CPU measurements. Transfer time can exceed the savings
+   for this deliberately small fixture; cache hits, not a speed threshold, prove
+   durable reuse.
+4. In an enrolled private caller repository, repeat the paired cold/warm workflow
+   with `runner: homelab` and the same shared workflow SHA to verify ARC. This
+   public helper repository is not enrolled in the private homelab runner fleet.
+   Pin consumer workflows to the reviewed shared commit. Monitor cold/warm results
+   on each repository. GitHub's cache settings/usage view owns quota monitoring
+   and manual eviction; eviction is a safe cold-build fallback. No local disk
+   cleanup, credentials, cluster storage or cache server is required.
+5. Roll back a consumer by setting `cache: false` or restoring its earlier shared
+   workflow SHA. Annotated-tag publication currently retains its existing cold
+   build behavior and requires separate release acceptance before adding caching.
