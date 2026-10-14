@@ -1,0 +1,109 @@
+# Reusable homelab production rollout workflow (source: alexcatdad/homelab-proj kubernetes/ci/templates/github).
+# Reusable homelab production rollout of an EXISTING, operator-managed
+# Kubernetes Deployment (spec kind "deployment"). Runs on the caller
+# repository's dedicated `homelab-deploy` ARC scale set, whose pod carries the
+# homelab CLI, buildctl, the BuildKit client certificate, a job-started guard
+# and a projected ServiceAccount token that may only get and patch that one
+# Deployment. `homelab app rollout` builds the merged commit with the shared
+# BuildKit, pushes it by digest, waits for the host-side pre-deploy database
+# dump, sets the image, waits for the rollout, smoke-tests the in-cluster
+# Service and rolls back to the previous image on any failure.
+# No cluster, registry or database credential is stored in GitHub.
+# The Knative path (deploy.yml) is separate and unchanged.
+name: Homelab rollout
+
+on:
+  workflow_call:
+    inputs:
+      ref:
+        description: Commit to build; defaults to the triggering commit
+        type: string
+        default: ""
+      image:
+        description: Digest-pinned image to roll out instead of building (redeploy or manual rollback)
+        type: string
+        default: ""
+      spec:
+        description: Repository-relative project spec (kind deployment)
+        type: string
+        default: deploy/app.json
+      runner:
+        description: Deploy runner label
+        type: string
+        default: homelab-deploy
+    outputs:
+      image:
+        description: Rolled-out image at its digest
+        value: ${{ jobs.rollout.outputs.image }}
+      dump:
+        description: Host path of the pre-deploy database dump
+        value: ${{ jobs.rollout.outputs.dump }}
+
+permissions:
+  contents: read
+
+jobs:
+  rollout:
+    # Production: the default branch after Checks, or an explicit owner
+    # dispatch on the default branch. Never pull requests or forks.
+    if: >-
+      github.event_name != 'pull_request' && github.event_name != 'pull_request_target' &&
+      (github.event_name == 'workflow_run' ||
+       (github.event_name == 'workflow_dispatch' && github.actor == github.repository_owner &&
+        github.ref_name == github.event.repository.default_branch))
+    runs-on: ${{ inputs.runner }}
+    environment: production
+    timeout-minutes: 75
+    outputs:
+      image: ${{ steps.rollout.outputs.image }}
+      dump: ${{ steps.rollout.outputs.dump }}
+    steps:
+      - name: Refuse workflow_run from another branch or a failed check
+        if: github.event_name == 'workflow_run'
+        env:
+          RUN_BRANCH: ${{ github.event.workflow_run.head_branch }}
+          RUN_EVENT: ${{ github.event.workflow_run.event }}
+          RUN_CONCLUSION: ${{ github.event.workflow_run.conclusion }}
+          RUN_REPOSITORY: ${{ github.event.workflow_run.head_repository.full_name }}
+          REPOSITORY: ${{ github.repository }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        run: |
+          set -eu
+          test "$RUN_BRANCH" = "$DEFAULT_BRANCH"
+          test "$RUN_EVENT" = push
+          test "$RUN_CONCLUSION" = success
+          test "$RUN_REPOSITORY" = "$REPOSITORY"
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ inputs.ref || github.event.workflow_run.head_sha || github.sha }}
+          persist-credentials: false
+      - name: Use homelab deploy tools
+        run: |
+          set -eu
+          test -x "$HOMELAB_TOOLS/homelab" && test -x "$HOMELAB_TOOLS/buildctl"
+          printf '%s\n' "$HOMELAB_TOOLS" >> "$GITHUB_PATH"
+      - name: Build, dump, roll out, smoke (automatic rollback on failure)
+        id: rollout
+        env:
+          SPEC: ${{ inputs.spec }}
+          IMAGE: ${{ inputs.image }}
+          REVISION: ${{ inputs.ref || github.event.workflow_run.head_sha || github.sha }}
+        run: |
+          set -eu
+          if [ -n "$IMAGE" ]; then
+            homelab app rollout --spec "$SPEC" --image "$IMAGE" --revision "$REVISION"
+          else
+            homelab app rollout --spec "$SPEC" --revision "$REVISION"
+          fi
+      - name: Summary
+        if: always()
+        env:
+          IMAGE: ${{ steps.rollout.outputs.image }}
+          PREVIOUS: ${{ steps.rollout.outputs.previous }}
+          DUMP: ${{ steps.rollout.outputs.dump }}
+          STATUS: ${{ steps.rollout.outputs.status }}
+          OUTCOME: ${{ steps.rollout.outcome }}
+        run: |
+          # shellcheck disable=SC2016 # literal Markdown backticks
+          printf '### Production rollout (%s)\n\n- status: `%s`\n- image: `%s`\n- previous: `%s`\n- pre-deploy dump: `%s`\n' \
+            "$OUTCOME" "$STATUS" "$IMAGE" "$PREVIOUS" "$DUMP" >> "$GITHUB_STEP_SUMMARY"
