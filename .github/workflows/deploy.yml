@@ -1,0 +1,141 @@
+# Reusable homelab deployment workflow (source: alexcatdad/homelab-proj kubernetes/ci/templates/github).
+# Reusable homelab deployment. Runs on the caller repository's dedicated
+# `homelab-deploy` ARC scale set, whose runner pod carries the homelab CLI,
+# buildctl, the BuildKit client certificate and a projected ServiceAccount
+# token bound only to the caller's app-<name>-dev / app-<name>-demo Role.
+# No cluster or registry credential is stored in GitHub.
+name: Homelab deploy
+
+on:
+  workflow_call:
+    inputs:
+      environment:
+        description: dev (development deployment) or demo (demo promotion)
+        type: string
+        default: dev
+      ref:
+        description: Commit to build; defaults to the triggering commit
+        type: string
+        default: ""
+      image:
+        description: Digest-pinned image to promote instead of building (demo)
+        type: string
+        default: ""
+      spec:
+        description: Repository-relative project spec
+        type: string
+        default: deploy/app.json
+      smoke-path:
+        description: Path requested once after the revision is Ready (non-5xx passes); empty skips
+        type: string
+        default: /
+      runner:
+        description: Deploy runner label
+        type: string
+        default: homelab-deploy
+    outputs:
+      image:
+        description: Deployed image at its digest
+        value: ${{ jobs.dev.outputs.image || jobs.demo.outputs.image }}
+      url:
+        description: Cluster-local Knative URL
+        value: ${{ jobs.dev.outputs.url || jobs.demo.outputs.url }}
+
+permissions:
+  contents: read
+
+jobs:
+  dev:
+    # Development deployment: default branch only, never pull requests or forks.
+    if: >-
+      inputs.environment == 'dev' &&
+      github.event_name != 'pull_request' && github.event_name != 'pull_request_target' &&
+      (github.ref_name == github.event.repository.default_branch || github.event_name == 'workflow_run')
+    runs-on: ${{ inputs.runner }}
+    timeout-minutes: 30
+    outputs:
+      image: ${{ steps.deploy.outputs.image }}
+      url: ${{ steps.deploy.outputs.url }}
+    steps:
+      - name: Refuse workflow_run from another branch or a failed check
+        if: github.event_name == 'workflow_run'
+        env:
+          RUN_BRANCH: ${{ github.event.workflow_run.head_branch }}
+          RUN_EVENT: ${{ github.event.workflow_run.event }}
+          RUN_CONCLUSION: ${{ github.event.workflow_run.conclusion }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        run: |
+          set -eu
+          test "$RUN_BRANCH" = "$DEFAULT_BRANCH"
+          test "$RUN_EVENT" = push
+          test "$RUN_CONCLUSION" = success
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ inputs.ref || github.event.workflow_run.head_sha || github.sha }}
+          persist-credentials: false
+      - name: Use homelab deploy tools
+        run: |
+          set -eu
+          test -x "$HOMELAB_TOOLS/homelab" && test -x "$HOMELAB_TOOLS/buildctl"
+          printf '%s\n' "$HOMELAB_TOOLS" >> "$GITHUB_PATH"
+      - name: Build, push by digest and apply the Knative Service
+        id: deploy
+        env:
+          SPEC: ${{ inputs.spec }}
+          SMOKE_PATH: ${{ inputs.smoke-path }}
+          REVISION: ${{ inputs.ref || github.event.workflow_run.head_sha || github.sha }}
+        run: |
+          set -eu
+          homelab app deploy --spec "$SPEC" --env dev --revision "$REVISION" --smoke-path "$SMOKE_PATH"
+      - name: Summary
+        env:
+          IMAGE: ${{ steps.deploy.outputs.image }}
+          URL: ${{ steps.deploy.outputs.url }}
+        run: |
+          # shellcheck disable=SC2016 # literal Markdown backticks
+          printf '### Development deployment\n\n- image: `%s`\n- url: `%s`\n' "$IMAGE" "$URL" >> "$GITHUB_STEP_SUMMARY"
+
+  demo:
+    # Demo promotion: explicit dispatch by the repository owner, behind the
+    # `demo` environment (required reviewer where the plan supports it).
+    if: >-
+      inputs.environment == 'demo' &&
+      github.event_name == 'workflow_dispatch' &&
+      github.actor == github.repository_owner
+    runs-on: ${{ inputs.runner }}
+    environment: demo
+    timeout-minutes: 30
+    outputs:
+      image: ${{ steps.deploy.outputs.image }}
+      url: ${{ steps.deploy.outputs.url }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ inputs.ref || github.sha }}
+          persist-credentials: false
+      - name: Use homelab deploy tools
+        run: |
+          set -eu
+          test -x "$HOMELAB_TOOLS/homelab" && test -x "$HOMELAB_TOOLS/buildctl"
+          printf '%s\n' "$HOMELAB_TOOLS" >> "$GITHUB_PATH"
+      - name: Promote (or build) and apply the demo Knative Service
+        id: deploy
+        env:
+          SPEC: ${{ inputs.spec }}
+          IMAGE: ${{ inputs.image }}
+          SMOKE_PATH: ${{ inputs.smoke-path }}
+          REVISION: ${{ inputs.ref || github.sha }}
+        run: |
+          set -eu
+          if [ -n "$IMAGE" ]; then
+            homelab app deploy --spec "$SPEC" --env demo --image "$IMAGE" --revision "$REVISION" --smoke-path "$SMOKE_PATH"
+          else
+            homelab app deploy --spec "$SPEC" --env demo --revision "$REVISION" --smoke-path "$SMOKE_PATH"
+          fi
+      - name: Summary
+        env:
+          IMAGE: ${{ steps.deploy.outputs.image }}
+          URL: ${{ steps.deploy.outputs.url }}
+        run: |
+          # shellcheck disable=SC2016 # literal Markdown backticks
+          printf '### Demo promotion\n\n- image: `%s`\n- url: `%s`\n' "$IMAGE" "$URL" >> "$GITHUB_STEP_SUMMARY"
