@@ -19,6 +19,10 @@ Use the [read-only audit command](docs/repository-audit.md) to collect settings
 and observed checks for one explicitly selected repository before proposing a
 change. Store account-specific reports outside this public checkout.
 
+The separate [create-only ruleset command](docs/create-ruleset.md) prepares a
+reviewable plan and requires its approved hash plus unchanged evidence before
+creating a default-branch ruleset. It never updates existing rulesets.
+
 ## Build an image
 
 Pin the shared workflow to a reviewed commit SHA. The caller must explicitly
