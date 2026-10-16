@@ -15,6 +15,10 @@ shared workflow contracts, caller responsibilities and GitHub Free limits.
 The proposed [main ruleset](rules/ci-actions-main.json) is reviewable data;
 committing it does not apply GitHub settings.
 
+Use the [read-only audit command](docs/repository-audit.md) to collect settings
+and observed checks for one explicitly selected repository before proposing a
+change. Store account-specific reports outside this public checkout.
+
 ## Build an image
 
 Pin the shared workflow to a reviewed commit SHA. The caller must explicitly
