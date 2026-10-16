@@ -95,6 +95,15 @@ export async function auditRepository(target: string, get: Get = readApi) {
       get(`${root}/rules/branches/${encodeURIComponent(defaultBranch)}?per_page=100`, true),
       get(`${branchPath}/protection`),
     ]);
+  let selectedActions: Observation = unavailable('Actions policy unavailable');
+  if (actions.status === 'observed') {
+    if (actions.value?.allowed_actions === 'selected') {
+      selectedActions = project(await get(`${root}/actions/permissions/selected-actions`), value =>
+        fields(value, ['github_owned_allowed', 'verified_allowed', 'patterns_allowed']));
+    } else if (['all', 'local_only'].includes(actions.value?.allowed_actions)) {
+      selectedActions = { status: 'observed', value: { applicable: false } };
+    }
+  }
   const branch = project(branchResult, value => {
     if (!/^[a-f0-9]{40}$/.test(value.commit?.sha)) throw Error('commit expected');
     return { name: value.name, sha: value.commit.sha, protected: value.protected ?? null };
@@ -120,7 +129,7 @@ export async function auditRepository(target: string, get: Get = readApi) {
     });
   }
   const observations = {
-    repository, branch,
+    repository, branch, selectedActions,
     actions: project(actions, v => fields(v, ['enabled', 'allowed_actions', 'sha_pinning_required'])),
     workflowPermissions: project(workflowPermissions, v =>
       fields(v, ['default_workflow_permissions', 'can_approve_pull_request_reviews'])),

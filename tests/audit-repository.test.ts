@@ -17,6 +17,7 @@ const sha = 'a'.repeat(40);
 const root = 'repos/example/project';
 let value;
 if(mode === 'denied' || (mode === 'partial' && path.endsWith('/actions/permissions')) ||
+   (mode === 'selected-denied' && path.endsWith('/selected-actions')) ||
    (mode === 'classic404' && path.endsWith('/protection'))) {
   console.error('gh: synthetic-private-diagnostic (HTTP ' + (mode === 'classic404' ? 404 : 403) + ')');
   process.exit(1);
@@ -32,7 +33,11 @@ else if(path === root+'/branches/release%2Fmain') {
 }
 else if(path.endsWith('/protection')) value={required_status_checks:{strict:true,contexts:['external']}};
 else if(path.endsWith('/actions/permissions/workflow')) value={default_workflow_permissions:'read',can_approve_pull_request_reviews:false};
-else if(path.endsWith('/actions/permissions')) value={enabled:true,allowed_actions:'all'};
+else if(path.endsWith('/actions/permissions')) value={enabled:true,allowed_actions:mode.startsWith('selected') ? 'selected' : mode === 'local-only' ? 'local_only' : 'all', selected_actions_url:'https://untrusted.invalid/do-not-follow'};
+else if(path.endsWith('/selected-actions')) {
+  if(!mode.startsWith('selected')) throw Error('unnecessary selected-actions request');
+  value={github_owned_allowed:true,verified_allowed:false,patterns_allowed:['example/action@*','example/workflows/.github/workflows/build.yml@*']};
+}
 else if(path.includes('/rulesets?')) value=[[{id:1,name:'parent',source_type:'Organization',enforcement:'active'}],[{id:2,name:'local',source_type:'Repository',enforcement:'disabled'}]];
 else if(path.includes('/rules/branches/')) value=[[{type:'pull_request',ruleset_id:1}],[{type:'non_fast_forward',ruleset_id:1}]];
 else if(path.includes('/check-runs?')) value=[{check_runs:[{name:'build',status:'completed',conclusion:'failure',head_sha:sha,app:{id:42}}]}, {check_runs:[{name:'test',status:'queued',conclusion:null,head_sha:sha,app:{id:42}},{name:'optional',status:'completed',conclusion:'skipped',head_sha:sha,app:{id:42}}]}];
@@ -78,7 +83,35 @@ describe('read-only repository audit CLI', () => {
     expect(result.report.commitStatuses.value[0].state).toBe('pending');
     expect(result.report.repository.value.allow_auto_merge).toBe(false);
     expect(result.report.repository.value.archived).toBeNull();
+    expect(result.report.selectedActions.value).toEqual({applicable:false});
     expect(result.stderr).toBe('');
+  });
+
+  test('collects the selected allowlist from the fixed repository endpoint', async () => {
+    const result = await run('selected');
+    expect(result.code).toBe(0);
+    expect(result.report.complete).toBe(true);
+    expect(result.report.selectedActions.value).toEqual({
+      github_owned_allowed:true, verified_allowed:false,
+      patterns_allowed:['example/action@*','example/workflows/.github/workflows/build.yml@*'],
+    });
+  });
+
+  test('selected allowlist denial makes the collection incomplete', async () => {
+    const result = await run('selected-denied');
+    expect(result.code).toBe(2);
+    expect(result.report.complete).toBe(false);
+    expect(result.report.actions.value.allowed_actions).toBe('selected');
+    expect(result.report.selectedActions.status).toBe('unavailable');
+    expect(result.report.selectedActions.httpStatus).toBe(403);
+  });
+
+  test('does not request selected allowlists for local-only or unavailable policies', async () => {
+    const local = await run('local-only');
+    expect(local.code).toBe(0);
+    expect(local.report.selectedActions.value).toEqual({applicable:false});
+    const denied = await run('partial');
+    expect(denied.report.selectedActions.status).toBe('unavailable');
   });
 
   test('marks partial private evidence unknown and omits raw diagnostics', async () => {
