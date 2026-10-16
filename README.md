@@ -7,6 +7,14 @@ Callers keep
 their triggers, tests, release policy and deployment. Go and Node checks stay
 in each project until repeated migrations justify extracting them.
 
+## Repository maintenance
+
+See [contribution checks](CONTRIBUTING.md), [security reporting](SECURITY.md),
+and [repository defaults](docs/repository-defaults.md). The defaults describe
+shared workflow contracts, caller responsibilities and GitHub Free limits.
+The proposed [main ruleset](rules/ci-actions-main.json) is reviewable data;
+committing it does not apply GitHub settings.
+
 ## Build an image
 
 Pin the shared workflow to a reviewed commit SHA. The caller must explicitly

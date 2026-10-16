@@ -35,6 +35,7 @@ jobs:
   evidence:
     needs: [cold, warm]
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     env:
       COLD_DIGEST: ${{ needs.cold.outputs.digest }}
       WARM_DIGEST: ${{ needs.warm.outputs.digest }}
