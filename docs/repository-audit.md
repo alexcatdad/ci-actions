@@ -21,8 +21,11 @@ observations, and check runs/legacy commit statuses at the observed
 default-branch SHA. Lists are paginated. The branch SHA is read again at the end
 to detect concurrent changes. For private personal repositories, eligibility
 matches the authenticated `/user` login to the repository owner and observes
-the owner's plan; for classic personal access tokens, GitHub requires the
-`read:user` scope to return private user fields. Repository `admin` permission
+the owner's plan when exposed. If the plan is missing, successful rulesets
+and effective-default-branch-rules reads can provide positive read-capability
+evidence; the subscription name remains unknown. For classic personal access
+tokens, GitHub requires read:user scope to return private user fields.
+Repository admin permission
 is reported separately. It does not prove `Administration: write` token scope.
 
 With `--usage`, the audit samples at most the latest 20 workflow runs and fetches

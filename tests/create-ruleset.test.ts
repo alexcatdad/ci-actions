@@ -16,7 +16,8 @@ const mainSHA = 'a'.repeat(40), prSHA = 'b'.repeat(40);
 function fixture() {
   const state = {
     repo: { id: 123, full_name: 'example/project', private: false, archived: false,
-      owner: { type: 'User', login: 'example' }, permissions: { admin: true }, default_branch: 'release/main' },
+      allow_auto_merge: false, allow_merge_commit: true, allow_squash_merge: true, allow_rebase_merge: true,
+      owner: { type: 'User', id: 1, login: 'example' }, permissions: { admin: true }, default_branch: 'release/main' },
     branch: { commit: { sha: mainSHA } },
     pr: { number: 8, state: 'closed', updated_at: '2026-01-01T00:00:00Z',
       base: { repo: { full_name: 'example/project' }, ref: 'release/main' },
@@ -48,7 +49,13 @@ function fixture() {
     state.created.rules.find((r: any) => r.type === 'pull_request').parameters.required_reviewers = [];
     return { id: 99 };
   };
-  return { state, calls, writes, get, post };
+  const patches: any[] = [];
+  const patch = async (target: string, value: any) => {
+    patches.push({ target, value: structuredClone(value) });
+    state.repo.allow_auto_merge = value.allow_auto_merge;
+    return { ...structuredClone(state.repo), full_name: target };
+  };
+  return { state, calls, writes, patches, get, post, patch };
 }
 
 describe('create-only ruleset plan and apply', () => {
@@ -79,6 +86,16 @@ describe('create-only ruleset plan and apply', () => {
     f.calls.length = 0;
     await expect(applyCreate(plan, '0'.repeat(64), f.get, f.post)).rejects.toThrow('approval hash');
     plan.ruleset.name = 'Changed after review';
+    await expect(applyCreate(plan, plan.approvalHash, f.get, f.post)).rejects.toThrow('approval hash');
+    expect(f.calls).toHaveLength(0);
+    expect(f.writes).toHaveLength(0);
+  });
+
+  test('edited target refuses under the original approval hash', async () => {
+    const f = fixture();
+    const plan = await planCreate('example/project', payload(), 8, f.get);
+    f.calls.length = 0;
+    plan.target = 'example/other';
     await expect(applyCreate(plan, plan.approvalHash, f.get, f.post)).rejects.toThrow('approval hash');
     expect(f.calls).toHaveLength(0);
     expect(f.writes).toHaveLength(0);
@@ -122,7 +139,75 @@ describe('create-only ruleset plan and apply', () => {
     expect((await applyCreate(plan, plan.approvalHash, f.get, f.post)).verified).toBe(true);
   });
 
-  for (const mode of ['free', 'missing-plan', 'wrong-owner', 'denied', 'no-admin', 'unknown-admin']) {
+  test('default plan leaves merge settings out of approval and apply never patches them', async () => {
+    const f = fixture();
+    const plan = await planCreate('example/project', payload(), 8, f.get);
+    expect((plan as any).settings).toBeUndefined();
+    await applyCreate(plan, plan.approvalHash, f.get, f.post, f.patch);
+    expect(f.patches).toHaveLength(0);
+  });
+
+  test('opt-in auto-merge plan fingerprints settings and patches once after verified protection creation', async () => {
+    const f = fixture();
+    const plan = await planCreate('example/project', payload(), 8, f.get, true);
+    expect(plan.settings).toEqual({ allow_auto_merge: true });
+    const originalHash = plan.approvalHash;
+    plan.settings.allow_auto_merge = false;
+    await expect(applyCreate(plan, originalHash, f.get, f.post, f.patch)).rejects.toThrow('approval hash');
+    expect(f.writes).toHaveLength(0);
+    expect(f.patches).toHaveLength(0);
+    plan.settings.allow_auto_merge = true;
+    await applyCreate(plan, originalHash, f.get, f.post, f.patch);
+    expect(f.patches).toEqual([{ target: 'example/project', value: { allow_auto_merge: true } }]);
+    expect(f.state.repo.allow_auto_merge).toBe(true);
+  });
+
+  test('settings drift, target mismatch, and permission loss prevent auto-merge patch', async () => {
+    for (const change of ['drift', 'target', 'permission', 'auto-merge'] as const) {
+      const f = fixture();
+      const plan = await planCreate('example/project', payload(), 8, f.get, true);
+      if (change === 'drift') f.state.repo.allow_squash_merge = false;
+      if (change === 'target') f.state.repo.full_name = 'example/other';
+      if (change === 'permission') f.state.repo.permissions.admin = false;
+      if (change === 'auto-merge') f.state.repo.allow_auto_merge = true;
+      await expect(applyCreate(plan, plan.approvalHash, f.get, f.post, f.patch)).rejects.toThrow();
+      expect(f.writes).toHaveLength(0);
+      expect(f.patches).toHaveLength(0);
+    }
+  });
+
+  test('failed ruleset readback prevents auto-merge patch', async () => {
+    const f = fixture();
+    const plan = await planCreate('example/project', payload(), 8, f.get, true);
+    const get = async (path: string, paginated?: boolean): Promise<any> => {
+      if (path.endsWith('/rulesets/99')) return { status: 'unavailable', httpStatus: 403 };
+      return f.get(path, paginated);
+    };
+    await expect(applyCreate(plan, plan.approvalHash, get, f.post, f.patch)).rejects.toThrow('evidence unavailable');
+    expect(f.writes).toHaveLength(1);
+    expect(f.patches).toHaveLength(0);
+  });
+
+  test('uncertain settings patch is attempted once and bad settings readback preserves created protection', async () => {
+    const f = fixture();
+    const plan = await planCreate('example/project', payload(), 8, f.get, true);
+    let attempts = 0;
+    await expect(applyCreate(plan, plan.approvalHash, f.get, f.post, async () => {
+      attempts++;
+      throw Error('Settings update outcome uncertain');
+    })).rejects.toThrow('uncertain');
+    expect(attempts).toBe(1);
+    expect(f.writes).toHaveLength(1);
+
+    const g = fixture();
+    const autoPlan = await planCreate('example/project', payload(), 8, g.get, true);
+    const patchButIgnore = async (_target: string, _value: any) => { g.patches.push('attempted'); };
+    await expect(applyCreate(autoPlan, autoPlan.approvalHash, g.get, g.post, patchButIgnore)).rejects.toThrow();
+    expect(g.writes).toHaveLength(1);
+    expect(g.patches).toEqual(['attempted']);
+  });
+
+  for (const mode of ['free', 'wrong-owner', 'denied', 'no-admin', 'unknown-admin']) {
     test('refuses private eligibility failure: ' + mode, async () => {
       const f = fixture(); f.state.repo.private = true;
       if (mode === 'no-admin') f.state.repo.permissions.admin = false;
@@ -131,12 +216,81 @@ describe('create-only ruleset plan and apply', () => {
         if (path !== 'user') return f.get(path, paginated);
         if (mode === 'denied') return { status: 'unavailable', httpStatus: 403, reason: 'denied' };
         return { status: 'observed', value: { login: mode === 'wrong-owner' ? 'other' : 'example',
-          plan: mode === 'missing-plan' ? undefined : { name: mode === 'free' ? 'free' : 'pro' } } };
+          plan: { name: mode === 'free' ? 'free' : 'pro' } } };
       };
       await expect(planCreate('example/project', payload(), 8, get)).rejects.toThrow();
       expect(f.writes).toHaveLength(0);
     });
   }
+
+  test('private owner with missing plan uses valid repository rules reads as capability evidence', async () => {
+    const f = fixture(); f.state.repo.private = true;
+    const get = async (path: string, paginated?: boolean): Promise<any> => path === 'user'
+      ? { status: 'observed', value: { login: 'example' } } : f.get(path, paginated);
+    const plan = await planCreate('example/project', payload(), 8, get);
+    expect(plan.baseline.eligibility.plan).toBeNull();
+    expect(plan.baseline.eligibility.feature).toBe('supported');
+  });
+
+  test('private owner with missing plan and malformed rules reads remains unknown', async () => {
+    const f = fixture(); f.state.repo.private = true;
+    const get = async (path: string, paginated?: boolean): Promise<any> => {
+      if (path === 'user') return { status: 'observed', value: { login: 'example' } };
+      if (path.includes('/rulesets?')) return { status: 'observed', value: [{ malformed: true }] };
+      return f.get(path, paginated);
+    };
+    await expect(planCreate('example/project', payload(), 8, get)).rejects.toThrow();
+    expect(f.writes).toHaveLength(0);
+  });
+
+  for (const mode of ['rulesets-403', 'rulesets-404', 'effective-403', 'effective-404'] as const) {
+    test(`private missing-plan capability rejects ${mode}`, async () => {
+      const f = fixture(); f.state.repo.private = true;
+      const get = async (path: string, paginated?: boolean): Promise<any> => {
+        if (path === 'user') return { status: 'observed', value: { login: 'example' } };
+        if (mode === 'rulesets-403' && path.includes('/rulesets?')) return { status: 'unavailable', httpStatus: 403 };
+        if (mode === 'rulesets-404' && path.includes('/rulesets?')) return { status: 'unavailable', httpStatus: 404 };
+        if (mode === 'effective-403' && path.includes('/rules/branches/')) return { status: 'unavailable', httpStatus: 403 };
+        if (mode === 'effective-404' && path.includes('/rules/branches/')) return { status: 'unavailable', httpStatus: 404 };
+        return f.get(path, paginated);
+      };
+      await expect(planCreate('example/project', payload(), 8, get)).rejects.toThrow();
+      expect(f.writes).toHaveLength(0);
+    });
+  }
+
+  test('explicit private free plan does not use repository rules capability fallback', async () => {
+    const f = fixture(); f.state.repo.private = true;
+    const seen: string[] = [];
+    const get = async (path: string, paginated?: boolean): Promise<any> => {
+      seen.push(path);
+      if (path === 'user') return { status: 'observed', value: { login: 'example', plan: { name: 'free' } } };
+      return f.get(path, paginated);
+    };
+    await expect(planCreate('example/project', payload(), 8, get)).rejects.toThrow('GitHub Pro');
+    expect(seen.some(path => path.includes('/rulesets?'))).toBe(false);
+    expect(seen.some(path => path.includes('/rules/branches/'))).toBe(false);
+  });
+
+  test('private missing-plan empty outer ruleset pages are not capability evidence', async () => {
+    const f = fixture(); f.state.repo.private = true;
+    const get = async (path: string, paginated?: boolean): Promise<any> => {
+      if (path === 'user') return { status: 'observed', value: { login: 'example' } };
+      if (path.includes('/rulesets?')) return { status: 'observed', value: [] };
+      return f.get(path, paginated);
+    };
+    await expect(planCreate('example/project', payload(), 8, get)).rejects.toThrow();
+    expect(f.writes).toHaveLength(0);
+  });
+
+  test('auto-merge patch response for a different repository is rejected', async () => {
+    const f = fixture();
+    const plan = await planCreate('example/project', payload(), 8, f.get, true);
+    await expect(applyCreate(plan, plan.approvalHash, f.get, f.post, async () => ({
+      ...f.state.repo, full_name: 'example/other', allow_auto_merge: true,
+    }))).rejects.toThrow('readback unavailable or mismatched');
+    expect(f.writes).toHaveLength(1);
+  });
 
   test('plan downgrade and admin revocation prevent an approved write', async () => {
     for (const change of ['plan', 'permission']) {
@@ -212,9 +366,17 @@ if(method==='POST') {
   const body=JSON.parse(await Bun.stdin.text());
   await Bun.write(process.env.RULESET_CAPTURE, JSON.stringify(body));
   console.log(JSON.stringify({id:99}));
+} else if(method==='PATCH') {
+  if(path!=='repos/example/project'||a[10]!=='--input'||a[11]!=='-')throw Error('wrong settings PATCH');
+  const body=JSON.parse(await Bun.stdin.text());
+  await Bun.write(process.env.RULESET_PATCH_CAPTURE, JSON.stringify(body));
+  console.log(JSON.stringify({id:123,full_name:'example/project',owner:{type:'User',id:1,login:'example'},private:false,archived:false,allow_auto_merge:true,allow_merge_commit:true,allow_squash_merge:true,allow_rebase_merge:true}));
 } else if(method==='GET') {
   if(path.endsWith('/rulesets/99')) console.log(JSON.stringify({...value.ruleset,id:99}));
-  else if(path==='repos/example/project') console.log(JSON.stringify({id:123,full_name:'example/project',private:false,archived:false,owner:{type:'User',login:'example'},permissions:{admin:true},default_branch:'release/main'}));
+  else if(path==='repos/example/project') {
+    const patched=Boolean(process.env.RULESET_PATCH_CAPTURE && await Bun.file(process.env.RULESET_PATCH_CAPTURE).exists());
+    console.log(JSON.stringify({id:123,full_name:'example/project',private:false,archived:false,allow_auto_merge:patched,allow_merge_commit:true,allow_squash_merge:true,allow_rebase_merge:true,owner:{type:'User',id:1,login:'example'},permissions:{admin:true},default_branch:'release/main'}));
+  }
   else if(path.endsWith('/branches/release%2Fmain')) console.log(JSON.stringify({commit:{sha:value.baseline.defaultBranchSHA}}));
   else if(path.endsWith('/pulls/8')) console.log(JSON.stringify({state:value.baseline.evidencePR.state,updated_at:value.baseline.evidencePR.updatedAt,base:{repo:{full_name:'example/project'},ref:'release/main'},head:{repo:{full_name:'example/project'},sha:value.baseline.evidencePR.headSHA}}));
   else if(path.includes('/rulesets?')) console.log(JSON.stringify([value.baseline.rulesets]));
@@ -239,4 +401,22 @@ test('CLI apply sends exact JSON on stdin to one explicit repository and verifie
   expect(JSON.parse(stdout).verified).toBe(true);
   expect(await Bun.file(capture).json()).toEqual(payload());
   expect(fingerprint({ b: 1, a: 2 })).toBe(fingerprint({ a: 2, b: 1 }));
+});
+
+test('CLI opt-in applies protection before a one-field auto-merge PATCH and verifies repository readback', async () => {
+  const f = fixture();
+  const plan = await planCreate('example/project', payload(), 8, f.get, true);
+  const path = join(directory, 'auto-plan.json'), capture = join(directory, 'auto-created.json');
+  const patchCapture = join(directory, 'auto-patch.json');
+  await Bun.write(path, JSON.stringify(plan));
+  const child = Bun.spawn([process.execPath, resolve('scripts/create-ruleset.ts'), 'apply', '--plan', path,
+    '--approve', plan.approvalHash], { stdout: 'pipe', stderr: 'pipe',
+    env: { ...process.env, PATH: directory + ':' + process.env.PATH, RULESET_FIXTURE: path,
+      RULESET_CAPTURE: capture, RULESET_PATCH_CAPTURE: patchCapture } });
+  const [stdout, stderr, code] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited]);
+  expect(stderr).toBe('');
+  expect(code).toBe(0);
+  expect(JSON.parse(stdout).verified).toBe(true);
+  expect(await Bun.file(capture).json()).toEqual(payload());
+  expect(await Bun.file(patchCapture).json()).toEqual({ allow_auto_merge: true });
 });

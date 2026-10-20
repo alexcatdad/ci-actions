@@ -88,7 +88,32 @@ export async function repositoryEligibility(repo: any, get: Get = readApi) {
       plan = typeof user.value.plan?.name === 'string' ? user.value.plan.name.toLowerCase() : null;
       if (plan === 'pro') { feature = 'supported'; reason = 'Owner GitHub Pro plan observed'; }
       else if (plan === 'free') { feature = 'unsupported'; reason = 'Private personal repositories require GitHub Pro'; }
-      else reason = 'Owner plan missing or unrecognized; cannot verify private eligibility';
+      else if (plan === null) {
+        reason = 'Owner plan unavailable; cannot verify private eligibility';
+        // The repository rules endpoints provide positive evidence for private-repository
+        // ruleset capability when the owner plan is not exposed. Both reads must be
+        // complete and structurally valid; absent or malformed data proves nothing.
+        if (typeof repo.default_branch === 'string' && repo.default_branch.length > 0) {
+          const root = `repos/${repo.full_name}`;
+          const [rulesets, branchRules] = await Promise.all([
+            get(`${root}/rulesets?includes_parents=true&per_page=100`, true),
+            get(`${root}/rules/branches/${encodeURIComponent(repo.default_branch)}?per_page=100`, true),
+          ]);
+          const validPages = (result: Observation, rowValid: (row: any) => boolean) => {
+            if (result.status !== 'observed' || !Array.isArray(result.value) || result.value.length === 0) return false;
+            return result.value.every((page: any) => {
+              return Array.isArray(page) && page.every(rowValid);
+            });
+          };
+          if (validPages(rulesets, (row: any) => row && typeof row === 'object' && !Array.isArray(row) &&
+              Number.isSafeInteger(row.id) && row.id > 0 && typeof row.name === 'string') &&
+              validPages(branchRules, (row: any) => row && typeof row === 'object' && !Array.isArray(row) &&
+                typeof row.type === 'string')) {
+            feature = 'supported';
+            reason = 'Private repository ruleset capability observed from repository rules APIs';
+          }
+        }
+      }
     } else reason = 'Owner plan unavailable; authenticate as the owner with access to private user fields';
   }
   return { feature, permission, plan, reason,

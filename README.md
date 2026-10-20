@@ -24,8 +24,8 @@ The separate [create-only ruleset command](docs/create-ruleset.md) prepares a
 reviewable plan for eligible personal repositories and requires its approved
 hash plus unchanged evidence before creating a default-branch ruleset. It never
 updates existing rulesets. A repository owner must separately approve any
-repository settings change, including enabling native auto-merge; this tooling
-does not change that setting. These defaults do not migrate consumer workflows.
+repository settings change, including enabling native auto-merge. The ruleset
+planner can include that setting through the explicit --enable-auto-merge option. These defaults do not migrate consumer workflows.
 
 ## Build an image
 
@@ -233,7 +233,9 @@ Have the repository owner enable native auto-merge in repository settings where
 the repository's plan supports it. Then enable it only on a reviewed PR with the
 expected head, required checks and required reviews. GitHub waits for configured
 requirements; auto-merge does not approve the change. No helper in this
-repository changes the setting or enables auto-merge on a PR.
+repository enables auto-merge on a PR. The opt-in
+[approved ruleset plan](docs/create-ruleset.md) can enable the repository setting
+only after creating and verifying the approved protection.
 
 After owner approval and the required local checks/reviews, a maintainer can
 open a PR and enable native auto-merge for the reviewed head:
