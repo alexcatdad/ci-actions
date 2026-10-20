@@ -11,7 +11,8 @@ in each project until repeated migrations justify extracting them.
 
 See [contribution checks](CONTRIBUTING.md), [security reporting](SECURITY.md),
 and [repository defaults](docs/repository-defaults.md). The defaults describe
-shared workflow contracts, caller responsibilities and GitHub Free limits.
+shared workflow contracts, caller responsibilities and plan-specific GitHub
+Actions allowances.
 The proposed [main ruleset](rules/ci-actions-main.json) is reviewable data;
 committing it does not apply GitHub settings.
 
@@ -20,17 +21,24 @@ and observed checks for one explicitly selected repository before proposing a
 change. Store account-specific reports outside this public checkout.
 
 The separate [create-only ruleset command](docs/create-ruleset.md) prepares a
-reviewable plan and requires its approved hash plus unchanged evidence before
-creating a default-branch ruleset. It never updates existing rulesets.
+reviewable plan for eligible personal repositories and requires its approved
+hash plus unchanged evidence before creating a default-branch ruleset. It never
+updates existing rulesets. A repository owner must separately approve any
+repository settings change, including enabling native auto-merge; this tooling
+does not change that setting. These defaults do not migrate consumer workflows.
 
 ## Build an image
 
 Pin the shared workflow to a reviewed commit SHA. The caller must explicitly
 grant `contents: read`; add `packages: write` only to its GHCR publishing job.
 The reusable workflow preserves caller permissions and requests no additional
-permissions. Public projects use the default
-GitHub-hosted runner. Private projects can set `runner: homelab` when that runner
-has the isolated BuildKit container policy described below.
+permissions. Public projects use the default GitHub-hosted runner. Keep ordinary
+lightweight CI on standard hosted Linux, including private repositories when the
+owner allowance fits. Reserve homelab runners for heavier jobs that need their
+specialized infrastructure and have passed the trust and isolation review
+below. Use native macOS runners only for checks that require macOS. Runner
+choice alone does not establish a cost saving; measure representative workflows
+before drawing cost conclusions.
 
 ```yaml
 jobs:
@@ -39,7 +47,7 @@ jobs:
       contents: read
     uses: alexcatdad/ci-actions/.github/workflows/image-build.yml@REVIEWED_COMMIT_SHA
     with:
-      runner: homelab # omit for GitHub-hosted ubuntu-latest
+      runner: homelab # optional; omit for GitHub-hosted ubuntu-latest
       context: .
       dockerfile: Dockerfile
       image: ghcr.io/alexcatdad/example
@@ -218,3 +226,27 @@ remain independent of cache access.
 5. Roll back a consumer by setting `cache: false` or restoring its earlier shared
    workflow SHA. Annotated-tag publication currently retains its existing cold
    build behavior and requires separate release acceptance before adding caching.
+
+## Native auto-merge
+
+Have the repository owner enable native auto-merge in repository settings where
+the repository's plan supports it. Then enable it only on a reviewed PR with the
+expected head, required checks and required reviews. GitHub waits for configured
+requirements; auto-merge does not approve the change. No helper in this
+repository changes the setting or enables auto-merge on a PR.
+
+After owner approval and the required local checks/reviews, a maintainer can
+open a PR and enable native auto-merge for the reviewed head:
+
+```sh
+gh pr create --fill
+head=$(git rev-parse HEAD)
+gh pr merge --auto --squash --match-head-commit "$head"
+```
+
+The merge command queues the reviewed head against repository requirements. Do
+not bypass protections or wait/poll here for CI; GitHub owns pending checks.
+
+See [repository defaults](docs/repository-defaults.md) for plan eligibility,
+runner trust, cache and concurrency guidance, and [repository audit](docs/repository-audit.md)
+for the optional bounded Actions usage sample.

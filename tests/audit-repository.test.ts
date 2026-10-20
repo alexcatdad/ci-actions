@@ -16,7 +16,7 @@ const mode = process.env.AUDIT_MODE;
 const sha = 'a'.repeat(40);
 const root = 'repos/example/project';
 let value;
-if(mode === 'denied' || (mode === 'partial' && path.endsWith('/actions/permissions')) ||
+if(mode === 'denied' || (mode === 'usage-denied' && path.includes('/actions/runs?')) || (mode === 'partial' && path.endsWith('/actions/permissions')) ||
    (mode === 'selected-denied' && path.endsWith('/selected-actions')) ||
    (mode === 'classic404' && path.endsWith('/protection'))) {
   console.error('gh: synthetic-private-diagnostic (HTTP ' + (mode === 'classic404' ? 404 : 403) + ')');
@@ -85,6 +85,14 @@ describe('read-only repository audit CLI', () => {
     expect(result.report.repository.value.archived).toBeNull();
     expect(result.report.selectedActions.value).toEqual({applicable:false});
     expect(result.stderr).toBe('');
+  });
+
+  test('usage denial makes the combined CLI report incomplete', async () => {
+    const result = await run('usage-denied', ['--repo', 'example/project', '--usage']);
+    expect(result.code).toBe(2);
+    expect(result.report.complete).toBe(false);
+    expect(result.report.usage.complete).toBe(false);
+    expect(result.report.usage.runs.httpStatus).toBe(403);
   });
 
   test('collects the selected allowlist from the fixed repository endpoint', async () => {

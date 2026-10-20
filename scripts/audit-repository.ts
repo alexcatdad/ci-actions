@@ -33,7 +33,10 @@ export const readApi: Get = async (endpoint, paginated = false) => {
     if (code !== 0) {
       const status = stderr.match(/\(HTTP (\d{3})\)/)?.[1];
       // Do not echo CLI diagnostics, response bodies or credential configuration.
-      return unavailable('GitHub request failed; check access, feature availability and connectivity',
+      return unavailable(status === '403' ? 'Access forbidden: check token permissions and feature eligibility' :
+        status === '401' ? 'Authentication required or invalid credentials' :
+        status === '404' ? 'Resource not found or inaccessible; absence is not proven' :
+        'GitHub request failed; check access, feature availability and connectivity',
         status ? Number(status) : null);
     }
     return { status: 'observed', value: JSON.parse(stdout) };
@@ -67,6 +70,81 @@ function pages(result: Observation, key?: string): Observation {
   });
 }
 
+// Plan evidence belongs to the repository owner, never the caller's unrelated subscription.
+export async function repositoryEligibility(repo: any, get: Get = readApi) {
+  const permission = repo.permissions?.admin === true ? 'admin' :
+    repo.permissions?.admin === false ? 'insufficient' : 'unknown';
+  let feature: 'supported' | 'unsupported' | 'unknown' = 'unknown';
+  let plan: string | null = null;
+  let reason = 'Repository visibility or owner type unavailable';
+  if (repo.owner?.type !== 'User' || repo.archived !== false) {
+    feature = 'unsupported'; reason = 'Only non-archived personal repositories are supported';
+  } else if (repo.private === false) {
+    feature = 'supported'; reason = 'Public personal repository';
+  } else if (repo.private === true) {
+    const user = await get('user');
+    if (user.status === 'observed' && typeof repo.owner?.login === 'string' &&
+        typeof user.value?.login === 'string' && user.value.login.toLowerCase() === repo.owner.login.toLowerCase()) {
+      plan = typeof user.value.plan?.name === 'string' ? user.value.plan.name.toLowerCase() : null;
+      if (plan === 'pro') { feature = 'supported'; reason = 'Owner GitHub Pro plan observed'; }
+      else if (plan === 'free') { feature = 'unsupported'; reason = 'Private personal repositories require GitHub Pro'; }
+      else reason = 'Owner plan missing or unrecognized; cannot verify private eligibility';
+    } else reason = 'Owner plan unavailable; authenticate as the owner with access to private user fields';
+  }
+  return { feature, permission, plan, reason,
+    tokenWritePermission: 'unverified: ruleset creation requires Administration: write; GET access does not prove it' };
+}
+
+// A bounded point-in-time sample; elapsed execution time is never a billing total.
+export async function auditUsage(target: string, get: Get = readApi) {
+  parseTarget(['--repo', target]);
+  const root = 'repos/' + target;
+  const runs = project(await get(root + '/actions/runs?per_page=20'), v => {
+    if (!Array.isArray(v.workflow_runs) || !Number.isSafeInteger(v.total_count) || v.total_count < 0) throw Error('runs expected');
+    return { total: v.total_count, runs: v.workflow_runs.slice(0, 20) };
+  });
+  const billing = unavailable('No personal-account Actions billing endpoint is listed in the current REST billing API; inspect owner Billing and licensing / Usage');
+  if (runs.status !== 'observed') return { runs, billing, complete: false };
+  const runnerInventory = project(pages(await get(root + '/actions/runners?per_page=100', true), 'runners'), values =>
+    values.map((v: any) => {
+      if (!Number.isSafeInteger(v.id) || v.id <= 0) throw Error('runner ID expected');
+      return v.id;
+    }));
+  const samples = [];
+  for (const run of runs.value.runs) {
+    if (!Number.isSafeInteger(run.id) || run.id <= 0) {
+      samples.push({ runID: null, jobs: unavailable('Invalid run ID') }); continue;
+    }
+    const jobs = project(pages(await get(root + '/actions/runs/' + run.id + '/jobs?filter=all&per_page=100', true), 'jobs'), values =>
+      values.map((job: any) => {
+        const labels = Array.isArray(job.labels) ? job.labels : [];
+        // ARC scale-set labels need not contain self-hosted. Never infer hosted from their absence.
+        const knownSelfHosted = runnerInventory.status === 'observed' && runnerInventory.value.includes(job.runner_id);
+        const standardHostedLabel = labels.some((label: any) => typeof label === 'string' &&
+          /^(ubuntu|windows|macos)-(latest|[0-9]+(?:\.[0-9]+)?)(?:-(?:arm|arm64|intel))?$/.test(label));
+        const runner = labels.includes('self-hosted') || knownSelfHosted ? 'self-hosted' :
+          standardHostedLabel ? 'github-hosted-inferred' : 'unknown';
+        const start = Date.parse(job.started_at), end = Date.parse(job.completed_at);
+        const seconds = job.status === 'completed' && Number.isFinite(start) && Number.isFinite(end) && end >= start
+          ? (end - start) / 1000 : null;
+        return { ...fields(job, ['id', 'name', 'status', 'conclusion', 'runner_name', 'runner_group_name']),
+          labels, runner, elapsedSeconds: seconds };
+      }));
+    samples.push({ runID: run.id, workflow: run.name ?? null, createdAt: run.created_at ?? null, jobs });
+  }
+  const rankedJobs = samples.flatMap(sample => sample.jobs.status === 'observed'
+    ? sample.jobs.value.filter((j: any) => j.elapsedSeconds !== null).map((j: any) =>
+      ({ runID: sample.runID, workflow: sample.workflow, ...j })) : [])
+    .sort((a: any, b: any) => b.elapsedSeconds - a.elapsedSeconds);
+  return { billing, scope: 'Latest 20 runs, all attempts; elapsed seconds exclude billing rounding, multipliers and rates',
+    totalRuns: runs.value.total, sampledRuns: samples.length, truncated: runs.value.total > samples.length,
+    complete: samples.every(s => s.jobs.status === 'observed'), runnerInventory, samples, rankedJobs,
+    opportunities: ['Review longest jobs for caching and redundant work',
+      'Cancel superseded PR runs using caller concurrency; serialize releases without cancellation',
+      'Verify unknown runner types in run details; ARC labels alone do not prove hosting',
+      'Use standard hosted Linux for lightweight private CI within the owner allowance; native macOS only when needed'] };
+}
+
 export async function auditRepository(target: string, get: Get = readApi) {
   // Validate callers importing this function as well as the CLI entry point.
   parseTarget(['--repo', target]);
@@ -76,11 +154,12 @@ export async function auditRepository(target: string, get: Get = readApi) {
   const repository = project(metadata, value => fields(value, [
     'full_name', 'visibility', 'private', 'archived', 'fork', 'default_branch',
     'allow_auto_merge', 'delete_branch_on_merge', 'allow_merge_commit',
-    'allow_squash_merge', 'allow_rebase_merge', 'security_and_analysis',
+    'allow_squash_merge', 'allow_rebase_merge', 'security_and_analysis', 'permissions',
   ]));
   if (metadata.status !== 'observed' || repository.status !== 'observed') {
     return { schemaVersion: 1, target, startedAt, complete: false, repository };
   }
+  const eligibility = await repositoryEligibility(metadata.value, get);
   const defaultBranch = metadata.value.default_branch;
   if (typeof defaultBranch !== 'string' || !defaultBranch) {
     return { schemaVersion: 1, target, startedAt, complete: false, repository,
@@ -142,13 +221,17 @@ export async function auditRepository(target: string, get: Get = readApi) {
     schemaVersion: 1, target, startedAt, completedAt: new Date().toISOString(),
     complete: Object.values(observations).every(v => v.status === 'observed') &&
       branchUnchanged.status === 'observed' && branchUnchanged.value === true,
-    ...observations,
+    ...observations, eligibility,
   };
 }
 
 if (import.meta.main) {
   try {
-    const report = await auditRepository(parseTarget(Bun.argv.slice(2)));
+    const args = Bun.argv.slice(2);
+    const usage = args.length === 3 && args[2] === '--usage';
+    const target = parseTarget(usage ? args.slice(0, 2) : args);
+    const report = { ...await auditRepository(target), ...(usage ? { usage: await auditUsage(target) } : {}) };
+    if (report.usage && !report.usage.complete) report.complete = false;
     console.log(JSON.stringify(report, null, 2));
     process.exitCode = report.complete ? 0 : 2;
   } catch (error) {
