@@ -197,6 +197,17 @@ export async function applyCreate(plan: any, approval: string, get: Get = readAp
   if (plan.settings?.allow_auto_merge === true) {
     // Opt-in only, after the protection has been created and verified. A failed or
     // uncertain PATCH leaves that protection in place for explicit operator review.
+    let effectiveRules: any[];
+    try {
+      effectiveRules = await list(get,
+        `repos/${plan.target}/rules/branches/${encodeURIComponent(plan.baseline.repository.defaultBranch)}?per_page=100`);
+    } catch {
+      throw Error('Created ruleset is not effective; inspect protection before enabling auto-merge');
+    }
+    const effective = plan.ruleset.rules.every((rule: any) => effectiveRules.some((actualRule: any) =>
+      actualRule?.ruleset_id === created.id && matchesReviewed({ type: rule.type, ...(rule.parameters === undefined ? {} : { parameters: rule.parameters }) }, actualRule)));
+    requireValue(effective,
+      'Created ruleset is not effective; inspect protection before enabling auto-merge');
     const changed = await patch(plan.target, { allow_auto_merge: true });
     requireValue(changed?.id === plan.baseline.repository.id &&
       changed?.full_name?.toLowerCase() === plan.target.toLowerCase() && changed.allow_auto_merge === true,

@@ -47,6 +47,7 @@ function fixture() {
     writes.push({ target, value: structuredClone(value) });
     state.created = { ...structuredClone(value), id: 99, current_user_can_bypass: 'never' };
     state.created.rules.find((r: any) => r.type === 'pull_request').parameters.required_reviewers = [];
+    state.effective.push(...value.rules.map((rule: any) => ({ ...structuredClone(rule), ruleset_id: 99 })));
     return { id: 99 };
   };
   const patches: any[] = [];
@@ -187,6 +188,27 @@ describe('create-only ruleset plan and apply', () => {
     expect(f.writes).toHaveLength(1);
     expect(f.patches).toHaveLength(0);
   });
+
+  for (const mode of ['absent', 'wrong-ruleset', 'wrong-context'] as const) {
+    test(`failed effective enforcement readback ${mode} prevents auto-merge patch`, async () => {
+      const f = fixture();
+      const plan = await planCreate('example/project', payload(), 8, f.get, true);
+      const get = async (path: string, paginated?: boolean): Promise<any> => {
+        if (f.state.created && path.includes('/rules/branches/')) {
+          let effective = f.state.effective.filter((r: any) => r.ruleset_id === 99);
+          if (mode === 'absent') effective = [];
+          if (mode === 'wrong-ruleset') effective = effective.map((r: any) => ({ ...r, ruleset_id: 100 }));
+          if (mode === 'wrong-context') effective = effective.map((r: any) => r.type === 'required_status_checks'
+            ? { ...r, parameters: { ...r.parameters, required_status_checks: [{ context: 'wrong', integration_id: 42 }] } } : r);
+          return { status: 'observed', value: [effective] };
+        }
+        return f.get(path, paginated);
+      };
+      await expect(applyCreate(plan, plan.approvalHash, get, f.post, f.patch)).rejects.toThrow();
+      expect(f.writes).toHaveLength(1);
+      expect(f.patches).toHaveLength(0);
+    });
+  }
 
   test('uncertain settings patch is attempted once and bad settings readback preserves created protection', async () => {
     const f = fixture();
@@ -334,11 +356,14 @@ describe('create-only ruleset plan and apply', () => {
     };
     await expect(applyCreate(plan, plan.approvalHash, f.get, changed)).rejects.toThrow('readback differs');
     expect(f.writes).toHaveLength(1);
+    const uncertain = fixture();
+    const uncertainPlan = await planCreate('example/project', payload(), 8, uncertain.get);
     let attempts = 0;
-    await expect(applyCreate(plan, plan.approvalHash, f.get, async () => {
+    await expect(applyCreate(uncertainPlan, uncertainPlan.approvalHash, uncertain.get, async () => {
       attempts++; throw Error('Write outcome uncertain');
     })).rejects.toThrow('uncertain');
     expect(attempts).toBe(1);
+    expect(uncertain.writes).toHaveLength(0);
   });
 
   test('bypasses, expanded ref scope, arbitrary rules and unbound checks are rejected', () => {
@@ -380,7 +405,11 @@ if(method==='POST') {
   else if(path.endsWith('/branches/release%2Fmain')) console.log(JSON.stringify({commit:{sha:value.baseline.defaultBranchSHA}}));
   else if(path.endsWith('/pulls/8')) console.log(JSON.stringify({state:value.baseline.evidencePR.state,updated_at:value.baseline.evidencePR.updatedAt,base:{repo:{full_name:'example/project'},ref:'release/main'},head:{repo:{full_name:'example/project'},sha:value.baseline.evidencePR.headSHA}}));
   else if(path.includes('/rulesets?')) console.log(JSON.stringify([value.baseline.rulesets]));
-  else if(path.includes('/rules/branches/')) console.log(JSON.stringify([value.baseline.effectiveBranchRules]));
+  else if(path.includes('/rules/branches/')) {
+    const created=await Bun.file(process.env.RULESET_CAPTURE).exists();
+    const proposed=created ? (await Bun.file(process.env.RULESET_CAPTURE).json()).rules.map((r:any)=>({...r,ruleset_id:99})) : [];
+    console.log(JSON.stringify([[...value.baseline.effectiveBranchRules,...proposed]]));
+  }
   else if(path.endsWith('/protection')) console.log(JSON.stringify(value.baseline.classicProtection.value));
   else if(path.includes('/check-runs?')) console.log(JSON.stringify([{check_runs:value.baseline.evidencePR.checks.map(c=>({name:c.name,app:{id:c.appID},head_sha:c.headSHA,status:c.status,conclusion:c.conclusion}))}]));
   else throw Error('unexpected read');

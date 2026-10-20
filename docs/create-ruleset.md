@@ -81,7 +81,9 @@ locally validated payload. Creating an active ruleset immediately changes gates.
 
 With --enable-auto-merge, the approval hash covers exactly
 settings: { allow_auto_merge: true }. After creating and reading back the
-ruleset, apply sends one PATCH containing only that field and verifies repository
+ruleset and observing each requested rule under its returned ID in the
+effective default-branch rules, apply sends one PATCH containing only that
+field and verifies repository
 identity, merge-method preservation and the setting through a fresh GET. Without
 the flag the command retains its create-only behavior. It never enrolls or
 merges a PR, edits merge methods or updates/deletes existing rulesets.
