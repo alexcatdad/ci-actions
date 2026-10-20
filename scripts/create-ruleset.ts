@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { parseTarget, readApi } from './audit-repository';
+import { parseTarget, readApi, repositoryEligibility } from './audit-repository';
 
 type Get = typeof readApi;
 const usage = 'Usage: bun scripts/create-ruleset.ts plan --repo OWNER/REPO --rules FILE --evidence-pr NUMBER\n' +
@@ -80,8 +80,11 @@ async function baseline(target: string, evidencePR: number, ruleset: any, get: G
   const root = `repos/${target}`;
   const repo = await observed(get, root);
   requireValue(repo.full_name?.toLowerCase() === target.toLowerCase() && Number.isSafeInteger(repo.id), 'Repository identity changed');
-  requireValue(repo.private === false && repo.owner?.type === 'User' && repo.archived === false,
-    'Only non-archived public personal repositories are supported');
+  const eligibility = await repositoryEligibility(repo, get);
+  requireValue(eligibility.feature === 'supported', eligibility.reason);
+  requireValue(eligibility.permission === 'admin', eligibility.permission === 'insufficient'
+    ? 'Insufficient repository permissions: admin required'
+    : 'Repository admin permission unavailable; cannot authorize a settings plan');
   requireValue(typeof repo.default_branch === 'string' && repo.default_branch.length > 0, 'Default branch unavailable');
   const path = `${root}/branches/${encodeURIComponent(repo.default_branch)}`;
   const [branch, pr, rulesets, effective, classic] = await Promise.all([
@@ -109,6 +112,7 @@ async function baseline(target: string, evidencePR: number, ruleset: any, get: G
   requireValue(latest.commit?.sha === branch.commit.sha, 'Default branch changed during collection');
   return {
     repository: { id: repo.id, name: repo.full_name, defaultBranch: repo.default_branch },
+    eligibility,
     defaultBranchSHA: branch.commit.sha,
     rulesets, effectiveBranchRules: effective, classicProtection: classic,
     evidencePR: { number: evidencePR, headSHA: pr.head.sha, state: pr.state,

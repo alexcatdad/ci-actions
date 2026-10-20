@@ -16,7 +16,7 @@ const mainSHA = 'a'.repeat(40), prSHA = 'b'.repeat(40);
 function fixture() {
   const state = {
     repo: { id: 123, full_name: 'example/project', private: false, archived: false,
-      owner: { type: 'User' }, default_branch: 'release/main' },
+      owner: { type: 'User', login: 'example' }, permissions: { admin: true }, default_branch: 'release/main' },
     branch: { commit: { sha: mainSHA } },
     pr: { number: 8, state: 'closed', updated_at: '2026-01-01T00:00:00Z',
       base: { repo: { full_name: 'example/project' }, ref: 'release/main' },
@@ -30,7 +30,8 @@ function fixture() {
   const get = async (path: string, paginated = false) => {
     calls.push(path);
     let value: any;
-    if (path === 'repos/example/project') value = state.repo;
+    if (path === 'user') value = { login: 'example', plan: { name: 'pro' } };
+    else if (path === 'repos/example/project') value = state.repo;
     else if (path.endsWith('/branches/release%2Fmain')) value = state.branch;
     else if (path.endsWith('/pulls/8')) value = state.pr;
     else if (path.includes('/rulesets?')) { expect(paginated).toBe(true); value = [state.rulesets, []]; }
@@ -103,16 +104,52 @@ describe('create-only ruleset plan and apply', () => {
     expect(f.writes).toHaveLength(0);
   });
 
-  for (const mode of ['private', 'organization', 'archived'] as const) {
+  for (const mode of ['organization', 'archived'] as const) {
     test(`refuses unsupported ${mode} repository`, async () => {
       const f = fixture();
-      if (mode === 'private') f.state.repo.private = true;
       if (mode === 'organization') f.state.repo.owner.type = 'Organization';
       if (mode === 'archived') f.state.repo.archived = true;
-      await expect(planCreate('example/project', payload(), 8, f.get)).rejects.toThrow('public personal');
+      await expect(planCreate('example/project', payload(), 8, f.get)).rejects.toThrow('personal repositories');
       expect(f.calls).toHaveLength(1);
     });
   }
+
+  test('private Pro owner can plan and apply zero-approval protection', async () => {
+    const f = fixture(); f.state.repo.private = true;
+    const plan = await planCreate('example/project', payload(), 8, f.get);
+    expect(plan.baseline.eligibility.plan).toBe('pro');
+    expect(plan.ruleset.rules.find((r: any) => r.type === 'pull_request').parameters.required_approving_review_count).toBe(0);
+    expect((await applyCreate(plan, plan.approvalHash, f.get, f.post)).verified).toBe(true);
+  });
+
+  for (const mode of ['free', 'missing-plan', 'wrong-owner', 'denied', 'no-admin', 'unknown-admin']) {
+    test('refuses private eligibility failure: ' + mode, async () => {
+      const f = fixture(); f.state.repo.private = true;
+      if (mode === 'no-admin') f.state.repo.permissions.admin = false;
+      if (mode === 'unknown-admin') delete (f.state.repo as any).permissions;
+      const get = async (path: string, paginated?: boolean): Promise<any> => {
+        if (path !== 'user') return f.get(path, paginated);
+        if (mode === 'denied') return { status: 'unavailable', httpStatus: 403, reason: 'denied' };
+        return { status: 'observed', value: { login: mode === 'wrong-owner' ? 'other' : 'example',
+          plan: mode === 'missing-plan' ? undefined : { name: mode === 'free' ? 'free' : 'pro' } } };
+      };
+      await expect(planCreate('example/project', payload(), 8, get)).rejects.toThrow();
+      expect(f.writes).toHaveLength(0);
+    });
+  }
+
+  test('plan downgrade and admin revocation prevent an approved write', async () => {
+    for (const change of ['plan', 'permission']) {
+      const f = fixture(); f.state.repo.private = true;
+      const plan = await planCreate('example/project', payload(), 8, f.get);
+      if (change === 'permission') f.state.repo.permissions.admin = false;
+      const get = async (path: string, paginated?: boolean): Promise<any> =>
+        path === 'user' && change === 'plan'
+          ? { status: 'observed', value: { login: 'example', plan: { name: 'free' } } } : f.get(path, paginated);
+      await expect(applyCreate(plan, plan.approvalHash, get, f.post)).rejects.toThrow();
+      expect(f.writes).toHaveLength(0);
+    }
+  });
 
   for (const mode of ['missing', 'wrong-app', 'failure', 'pending', 'skipped'] as const) {
     test(`refuses ${mode} required-check evidence`, async () => {
@@ -177,7 +214,7 @@ if(method==='POST') {
   console.log(JSON.stringify({id:99}));
 } else if(method==='GET') {
   if(path.endsWith('/rulesets/99')) console.log(JSON.stringify({...value.ruleset,id:99}));
-  else if(path==='repos/example/project') console.log(JSON.stringify({id:123,full_name:'example/project',private:false,archived:false,owner:{type:'User'},default_branch:'release/main'}));
+  else if(path==='repos/example/project') console.log(JSON.stringify({id:123,full_name:'example/project',private:false,archived:false,owner:{type:'User',login:'example'},permissions:{admin:true},default_branch:'release/main'}));
   else if(path.endsWith('/branches/release%2Fmain')) console.log(JSON.stringify({commit:{sha:value.baseline.defaultBranchSHA}}));
   else if(path.endsWith('/pulls/8')) console.log(JSON.stringify({state:value.baseline.evidencePR.state,updated_at:value.baseline.evidencePR.updatedAt,base:{repo:{full_name:'example/project'},ref:'release/main'},head:{repo:{full_name:'example/project'},sha:value.baseline.evidencePR.headSHA}}));
   else if(path.includes('/rulesets?')) console.log(JSON.stringify([value.baseline.rulesets]));
