@@ -47,9 +47,12 @@ same public-Free and public/private-Pro availability. Private Free personal
 repositories do not have those two features. This ruleset command additionally
 supports only non-archived personal repositories; it verifies the private
 repository owner by matching `/user` to the repository owner and observing
-`plan.name == pro`. The authenticated-user response needs appropriate access to
-private user fields; for classic personal access tokens this requires the
-`read:user` scope. Missing or unrecognized plan information fails closed.
+`plan.name == pro` when exposed. When the plan is omitted, successful
+repository-rules API reads can provide positive read-capability evidence; the
+subscription name remains unknown and write authorization/enforcement remain
+unverified. Explicit Free plans are refused. Classic personal access tokens need
+read:user to expose private user fields. Missing plan data without positive
+capability evidence, or unrecognized plan data, fails closed.
 
 The audit's repository metadata reports the caller's repository permission,
 including whether `admin` is true. That supports a plan-readiness check, but a
@@ -67,8 +70,8 @@ settings. No implementation should copy these contexts unchanged by default.
 ## Native auto-merge
 
 Repository-level auto-merge must first be enabled by the repository owner in
-repository settings. That setting is outside this repository's audit writes and
-ruleset creation tool. After owner approval, use GitHub's native auto-merge for
+repository settings, or be explicitly included in an owner-approved ruleset
+plan using --enable-auto-merge. The audit remains read-only. After owner approval, use GitHub's native auto-merge for
 an individually reviewed PR only after checking its exact head, required checks
 and reviews. GitHub waits for configured requirements; auto-merge does not
 approve a change or waive a required review.

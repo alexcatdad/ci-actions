@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto';
 import { parseTarget, readApi, repositoryEligibility } from './audit-repository';
 
 type Get = typeof readApi;
-const usage = 'Usage: bun scripts/create-ruleset.ts plan --repo OWNER/REPO --rules FILE --evidence-pr NUMBER\n' +
+const usage = 'Usage: bun scripts/create-ruleset.ts plan --repo OWNER/REPO --rules FILE --evidence-pr NUMBER [--enable-auto-merge]\n' +
   '       bun scripts/create-ruleset.ts apply --plan FILE --approve SHA256';
 const requireValue = (ok: unknown, message: string) => { if (!ok) throw Error(message); };
 const keys = (v: any, allowed: string[]) => requireValue(v && typeof v === 'object' &&
@@ -85,7 +85,15 @@ async function baseline(target: string, evidencePR: number, ruleset: any, get: G
   requireValue(eligibility.permission === 'admin', eligibility.permission === 'insufficient'
     ? 'Insufficient repository permissions: admin required'
     : 'Repository admin permission unavailable; cannot authorize a settings plan');
+  requireValue(typeof repo.owner?.login === 'string' && Number.isSafeInteger(repo.owner.id) &&
+    typeof repo.allow_auto_merge === 'boolean' && typeof repo.allow_merge_commit === 'boolean' &&
+    typeof repo.allow_squash_merge === 'boolean' && typeof repo.allow_rebase_merge === 'boolean' &&
+    typeof repo.permissions?.admin === 'boolean', 'Repository settings baseline unavailable');
   requireValue(typeof repo.default_branch === 'string' && repo.default_branch.length > 0, 'Default branch unavailable');
+  const mergeMethods = { merge: repo.allow_merge_commit, squash: repo.allow_squash_merge, rebase: repo.allow_rebase_merge };
+  const requestedMethods = ruleset.rules.find((r: any) => r.type === 'pull_request').parameters.allowed_merge_methods;
+  requireValue(requestedMethods.every((method: string) => mergeMethods[method as keyof typeof mergeMethods] === true),
+    'Ruleset merge methods must be enabled in repository settings');
   const path = `${root}/branches/${encodeURIComponent(repo.default_branch)}`;
   const [branch, pr, rulesets, effective, classic] = await Promise.all([
     observed(get, path), observed(get, `${root}/pulls/${evidencePR}`),
@@ -111,7 +119,10 @@ async function baseline(target: string, evidencePR: number, ruleset: any, get: G
   const latest = await observed(get, path);
   requireValue(latest.commit?.sha === branch.commit.sha, 'Default branch changed during collection');
   return {
-    repository: { id: repo.id, name: repo.full_name, defaultBranch: repo.default_branch },
+    repository: { id: repo.id, name: repo.full_name, owner: { type: repo.owner.type, login: repo.owner.login, id: repo.owner.id },
+      private: repo.private, archived: repo.archived, admin: repo.permissions.admin, defaultBranch: repo.default_branch,
+      allow_auto_merge: repo.allow_auto_merge, allow_merge_commit: repo.allow_merge_commit,
+      allow_squash_merge: repo.allow_squash_merge, allow_rebase_merge: repo.allow_rebase_merge },
     eligibility,
     defaultBranchSHA: branch.commit.sha,
     rulesets, effectiveBranchRules: effective, classicProtection: classic,
@@ -121,9 +132,12 @@ async function baseline(target: string, evidencePR: number, ruleset: any, get: G
   };
 }
 
-export async function planCreate(target: string, ruleset: any, evidencePR: number, get: Get = readApi) {
+export async function planCreate(target: string, ruleset: any, evidencePR: number, get: Get = readApi,
+  enableAutoMerge = false) {
   validateRuleset(ruleset);
+  requireValue(typeof enableAutoMerge === 'boolean', 'Invalid auto-merge option');
   const content = { schemaVersion: 1, operation: 'create-repository-ruleset', target, ruleset,
+    ...(enableAutoMerge ? { settings: { allow_auto_merge: true } } : {}),
     baseline: await baseline(target, evidencePR, ruleset, get) };
   return { ...content, approvalHash: fingerprint(content) };
 }
@@ -143,6 +157,20 @@ export async function postRuleset(target: string, ruleset: any) {
   try { return JSON.parse(stdout); } catch { throw Error('Write response unreadable; inspect repository rulesets before retrying'); }
 }
 
+export async function patchAutoMerge(target: string, patch: any) {
+  const child = Bun.spawn(['gh', 'api', '--hostname', 'github.com', '--method', 'PATCH',
+    '--header', 'Accept: application/vnd.github+json', '--header', 'X-GitHub-Api-Version: 2026-03-10',
+    `repos/${target}`, '--input', '-'], {
+    stdin: new Blob([JSON.stringify(patch)]), stdout: 'pipe', stderr: 'pipe', timeout: 30_000,
+    env: { ...process.env, GH_PROMPT_DISABLED: '1', GH_DEBUG: '' },
+  });
+  const [stdout, , code] = await Promise.all([
+    new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited,
+  ]);
+  requireValue(code === 0, 'Auto-merge write outcome uncertain; inspect repository settings before retrying');
+  try { return JSON.parse(stdout); } catch { throw Error('Auto-merge response unreadable; inspect repository settings before retrying'); }
+}
+
 function matchesReviewed(wanted: any, actual: any): boolean {
   if (Array.isArray(wanted)) return Array.isArray(actual) && wanted.length === actual.length &&
     wanted.every((v, i) => matchesReviewed(v, actual[i]));
@@ -150,19 +178,48 @@ function matchesReviewed(wanted: any, actual: any): boolean {
   return wanted === actual;
 }
 
-export async function applyCreate(plan: any, approval: string, get: Get = readApi, post = postRuleset) {
-  keys(plan, ['schemaVersion', 'operation', 'target', 'ruleset', 'baseline', 'approvalHash']);
+export async function applyCreate(plan: any, approval: string, get: Get = readApi, post = postRuleset,
+  patch = patchAutoMerge) {
+  keys(plan, ['schemaVersion', 'operation', 'target', 'ruleset', 'settings', 'baseline', 'approvalHash']);
   const { approvalHash, ...content } = plan;
   requireValue(plan.schemaVersion === 1 && plan.operation === 'create-repository-ruleset' &&
     /^[a-f0-9]{64}$/.test(approval) && approval === approvalHash && fingerprint(content) === approval,
     'Plan approval hash does not match');
   validateRuleset(plan.ruleset);
+  requireValue(plan.settings === undefined || canonical(plan.settings) === canonical({ allow_auto_merge: true }),
+    'Unsupported repository settings');
   const fresh = await baseline(plan.target, plan.baseline?.evidencePR?.number, plan.ruleset, get);
   requireValue(canonical(fresh) === canonical(plan.baseline), 'Repository evidence changed; generate and review a new plan');
   const created = await post(plan.target, plan.ruleset);
   requireValue(Number.isSafeInteger(created?.id) && created.id > 0, 'Write returned no ruleset ID; inspect repository before retrying');
   const actual = await observed(get, `repos/${plan.target}/rulesets/${created.id}`);
   requireValue(matchesReviewed(plan.ruleset, actual), `Ruleset ${created.id} readback differs; inspect it before further writes`);
+  if (plan.settings?.allow_auto_merge === true) {
+    // Opt-in only, after the protection has been created and verified. A failed or
+    // uncertain PATCH leaves that protection in place for explicit operator review.
+    const changed = await patch(plan.target, { allow_auto_merge: true });
+    requireValue(changed?.id === plan.baseline.repository.id &&
+      changed?.full_name?.toLowerCase() === plan.target.toLowerCase() && changed.allow_auto_merge === true,
+      'Auto-merge write readback unavailable or mismatched; inspect repository settings');
+    requireValue(changed.owner?.type === plan.baseline.repository.owner.type &&
+      changed.owner?.login?.toLowerCase() === plan.baseline.repository.owner.login.toLowerCase() &&
+      changed.owner?.id === plan.baseline.repository.owner.id &&
+      changed.private === plan.baseline.repository.private && changed.archived === plan.baseline.repository.archived &&
+      changed.allow_merge_commit === plan.baseline.repository.allow_merge_commit &&
+      changed.allow_squash_merge === plan.baseline.repository.allow_squash_merge &&
+      changed.allow_rebase_merge === plan.baseline.repository.allow_rebase_merge,
+      'Auto-merge repository identity changed; inspect repository settings');
+    const latest = await observed(get, `repos/${plan.target}`);
+    requireValue(latest.id === plan.baseline.repository.id &&
+      latest.full_name?.toLowerCase() === plan.target.toLowerCase() && latest.allow_auto_merge === true &&
+      latest.owner?.type === plan.baseline.repository.owner.type &&
+      latest.owner?.login?.toLowerCase() === plan.baseline.repository.owner.login.toLowerCase() &&
+      latest.owner?.id === plan.baseline.repository.owner.id && latest.private === plan.baseline.repository.private &&
+      latest.archived === plan.baseline.repository.archived && latest.allow_merge_commit === plan.baseline.repository.allow_merge_commit &&
+      latest.allow_squash_merge === plan.baseline.repository.allow_squash_merge &&
+      latest.allow_rebase_merge === plan.baseline.repository.allow_rebase_merge,
+      'Auto-merge setting readback failed; inspect repository settings');
+  }
   return { target: plan.target, id: created.id, verified: true,
     url: `https://github.com/${plan.target}/rules/${created.id}` };
 }
@@ -170,12 +227,14 @@ export async function applyCreate(plan: any, approval: string, get: Get = readAp
 if (import.meta.main) {
   try {
     const [mode, ...args] = Bun.argv.slice(2);
+    const enableAutoMerge = mode === 'plan' && args.at(-1) === '--enable-auto-merge';
+    const actualArgs = enableAutoMerge ? args.slice(0, -1) : args;
     const expected = mode === 'plan' ? ['--repo', '--rules', '--evidence-pr'] : ['--plan', '--approve'];
-    requireValue(['plan', 'apply'].includes(mode) && args.length === expected.length * 2 &&
-      expected.every((flag, i) => args[i * 2] === flag), usage);
+    requireValue(['plan', 'apply'].includes(mode) && actualArgs.length === expected.length * 2 &&
+      expected.every((flag, i) => actualArgs[i * 2] === flag), usage);
     const result = mode === 'plan'
-      ? await planCreate(args[1], await Bun.file(args[3]).json(), Number(args[5]))
-      : await applyCreate(await Bun.file(args[1]).json(), args[3]);
+      ? await planCreate(actualArgs[1], await Bun.file(actualArgs[3]).json(), Number(actualArgs[5]), readApi, enableAutoMerge)
+      : await applyCreate(actualArgs[1] ? await Bun.file(actualArgs[1]).json() : null, actualArgs[3]);
     console.log(JSON.stringify(result, null, 2));
   } catch (error) {
     console.error(error instanceof Error ? error.message : 'Ruleset operation failed');

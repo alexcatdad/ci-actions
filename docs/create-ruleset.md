@@ -2,22 +2,23 @@
 
 This opt-in Bun/GitHub CLI command creates one ruleset in one explicitly selected
 eligible personal repository. It supports public personal repositories and
-private personal repositories when the repository owner is observed on GitHub
-Pro. Organization-owned and archived repositories are outside this command's
-scope. It does not update/delete existing rulesets or change other repository
-settings. Use the read-only audit before proposing policy.
+private personal repositories with observed owner Pro eligibility or positive
+repository-rules read capability when GitHub omits the owner plan. Organization-owned
+and archived repositories are outside this command's scope. It does not update/delete existing rulesets or change other repository
+settings unless native auto-merge is explicitly included in the approved plan.
+Use the read-only audit before proposing policy.
 
-For a private repository, planning calls `GET /user`, verifies that the
-authenticated login matches the repository owner, and requires `plan.name` to
-be `pro`. For a classic personal access token, GitHub requires the `read:user`
-scope for the private user response; a fine-grained token does not require a
-user permission for this endpoint. Unavailable or unrecognized plan data is not
-treated as eligible. The repository
-metadata must also report `permissions.admin == true`. This is an eligibility
-check for preparing a plan, not proof that the token can write. Ruleset creation
-requires the API's `Administration: write` permission; GET access and admin
-metadata cannot establish that scope. GitHub is the final authority when the
-owner-approved apply is attempted.
+For a private repository, planning verifies the authenticated owner identity. An
+observed Pro plan supports eligibility; an observed Free plan is refused. When
+GitHub omits the plan field, successful, structurally valid reads of both the
+repository rulesets and effective default-branch rules supply positive read
+capability evidence. The report retains the unknown plan: it does not infer a
+subscription name, guarantee enforcement or prove write permission. Unavailable
+or malformed capability reads fail closed. GET access and repository admin
+metadata cannot establish token scope; creating a ruleset or updating the
+repository requires Administration write permission and GitHub remains the
+write authority. For classic tokens, private user fields need read:user scope;
+this command never changes credentials or scopes.
 
 The supported payload is the four-rule baseline illustrated in
 [ci-actions-main.json](../rules/ci-actions-main.json): PRs with resolved threads,
@@ -32,6 +33,8 @@ The ci-actions payload's check names are specific to that repository.
 ```sh
 umask 077
 bun scripts/create-ruleset.ts plan --repo OWNER/REPO --rules /private/review/rules.json --evidence-pr 123 > /private/review/plan.json
+# Opt in only when repository-level auto-merge is part of owner approval:
+bun scripts/create-ruleset.ts plan --repo OWNER/REPO --rules /private/review/rules.json --evidence-pr 123 --enable-auto-merge > /private/review/plan-with-auto-merge.json
 ```
 
 The evidence PR must be from the same repository, targeting its current default
@@ -41,7 +44,8 @@ or wrong-integration checks are refused. Choose a recent representative PR and
 review the meaning and event coverage of its jobs; success at one SHA does not
 prove all future PRs emit a check. This command does not approve code or reviews.
 
-The plan includes the target repository ID/name, owner plan eligibility and
+The plan includes the target repository ID/name/owner, existing merge methods
+and allow_auto_merge setting, owner plan or capability eligibility and
 repository admin observation, default branch SHA, current
 ruleset summaries, active branch rules, classic-protection observation, PR/check
 evidence, exact proposed payload and SHA-256 approval hash. A classic-protection
@@ -75,6 +79,19 @@ delete or roll back policy. Regenerate and review a plan after drift; never edit
 the saved baseline to force it through. An API schema error can still reject a
 locally validated payload. Creating an active ruleset immediately changes gates.
 
+With --enable-auto-merge, the approval hash covers exactly
+settings: { allow_auto_merge: true }. After creating and reading back the
+ruleset, apply sends one PATCH containing only that field and verifies repository
+identity, merge-method preservation and the setting through a fresh GET. Without
+the flag the command retains its create-only behavior. It never enrolls or
+merges a PR, edits merge methods or updates/deletes existing rulesets.
+
+If the settings PATCH fails or its outcome is uncertain, the new protection
+remains in place. Inspect the returned ruleset and repository setting before
+further action; do not rerun the entire create plan or remove protection to
+force progress. A saved plan from an earlier tool version may need regeneration
+because the settings baseline is now part of drift detection.
+
 Keep plans/reports in approved private storage outside the public checkout. They
 can contain repository/check names and rule actor metadata. No workflow invokes
 this command automatically. Existing contract CI tests use synthetic API/CLI
@@ -82,6 +99,7 @@ fixtures; a live write and its operational enforcement require separate approval
 
 References: [ruleset availability](https://docs.github.com/en/repositories/configuring-branches-and-merges-in-your-repository/managing-rulesets/about-rulesets),
 [authenticated user and private fields](https://docs.github.com/en/rest/users/users),
+[repository settings API](https://docs.github.com/en/rest/repos/repos#update-a-repository),
 [ruleset REST API and permissions](https://docs.github.com/en/rest/repos/rules),
 [PR evidence](https://docs.github.com/en/rest/pulls/pulls),
 [check-run evidence](https://docs.github.com/en/rest/checks/runs),
