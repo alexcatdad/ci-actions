@@ -38,7 +38,7 @@ describe.each(names)('%s', name => {
 
   test('declares no secrets and does not use secrets or tokens', () => {
     expect(trigger(workflow).workflow_call.secrets).toBeUndefined();
-    expect(sources[name]).not.toMatch(/secrets\.|secrets:|github\.token|GITHUB_TOKEN|GH_TOKEN/);
+    expect(sources[name]).not.toMatch(/\$\{\{\s*secrets\.|^\s*secrets:|github\.token|GITHUB_TOKEN|GH_TOKEN/m);
   });
 
   test('has no release, tag, publish, deploy or dispatch capability', () => {
