@@ -1,0 +1,28 @@
+# Example consumer workflow. Copy into an application repository as
+# .github/workflows/validation.yml and replace REVIEWED_COMMIT_SHA with a
+# reviewed full commit SHA of this repository. Commands are repository-owned.
+name: Validation
+on:
+  pull_request:
+  push:
+    branches: [main]
+permissions:
+  contents: read
+jobs:
+  pr:
+    if: github.event_name == 'pull_request'
+    permissions:
+      contents: read
+    uses: alexcatdad/ci-actions/.github/workflows/validate-pr.yml@REVIEWED_COMMIT_SHA
+    with:
+      lint-command: task lint
+      build-command: task build
+  main:
+    if: github.event_name == 'push'
+    permissions:
+      contents: read
+    uses: alexcatdad/ci-actions/.github/workflows/validate-main.yml@REVIEWED_COMMIT_SHA
+    with:
+      test-command: task test
+      integration-command: task test:integration
+      security-command: task security

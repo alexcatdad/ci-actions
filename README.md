@@ -252,3 +252,11 @@ not bypass protections or wait/poll here for CI; GitHub owns pending checks.
 See [repository defaults](docs/repository-defaults.md) for plan eligibility,
 runner trust, cache and concurrency guidance, and [repository audit](docs/repository-audit.md)
 for the optional bounded Actions usage sample.
+
+## Validation contract
+
+`validate-pr.yml` (leak scan, lint, build) and `validate-main.yml` (history leak
+scan, tests, integration, security) are validation-only reusable workflows with
+`contents: read` permissions and no release, publish, deploy or dispatch
+capability. See the [validation contract](docs/validation-contract.md) for
+inputs, pinning and migration.
