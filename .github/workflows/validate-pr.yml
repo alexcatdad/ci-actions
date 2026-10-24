@@ -1,0 +1,95 @@
+name: Validate pull request
+# Validation-only contract: leak scan, lint and build. It reads source and
+# reports a result. It never publishes, tags, signs, deploys or dispatches.
+on:
+  workflow_call:
+    inputs:
+      runner:
+        description: Runner label; default is GitHub-hosted ubuntu-latest.
+        type: string
+        default: ubuntu-latest
+      go-version:
+        description: Go toolchain for the leak scanner and optionally the app; empty uses the runner default.
+        type: string
+        default: '1.25'
+      bun-version:
+        description: Bun version to install before app commands; empty skips installation.
+        type: string
+        default: ''
+      lint-command:
+        description: Repository-owned lint command run from the repository root; empty skips.
+        type: string
+        default: ''
+      build-command:
+        description: Repository-owned compile/build validation command; empty skips.
+        type: string
+        default: ''
+      leak-scan:
+        description: Scan the checked-out tree for secrets.
+        type: boolean
+        default: true
+permissions:
+  contents: read
+jobs:
+  leaks:
+    if: inputs.leak-scan
+    runs-on: ${{ inputs.runner }}
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: ${{ inputs.go-version }}
+          cache: false
+      - name: Scan tree for leaked secrets
+        run: go run github.com/zricethezav/gitleaks/v8@v8.30.1 dir . --no-banner --redact
+  lint:
+    if: inputs.lint-command != ''
+    runs-on: ${{ inputs.runner }}
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - if: inputs.go-version != ''
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: ${{ inputs.go-version }}
+          cache: false
+      - if: inputs.bun-version != ''
+        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version: ${{ inputs.bun-version }}
+      - name: Lint
+        env:
+          COMMAND: ${{ inputs.lint-command }}
+        run: bash -euo pipefail -c "$COMMAND"
+  build:
+    if: inputs.build-command != ''
+    runs-on: ${{ inputs.runner }}
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - if: inputs.go-version != ''
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: ${{ inputs.go-version }}
+          cache: false
+      - if: inputs.bun-version != ''
+        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version: ${{ inputs.bun-version }}
+      - name: Build
+        env:
+          COMMAND: ${{ inputs.build-command }}
+        run: bash -euo pipefail -c "$COMMAND"

@@ -1,0 +1,124 @@
+name: Validate main
+# Validation-only contract for the default branch after merge: full-history
+# leak scan, full tests, integration and security checks. It never publishes,
+# tags, signs, deploys or dispatches.
+on:
+  workflow_call:
+    inputs:
+      runner:
+        description: Runner label; default is GitHub-hosted ubuntu-latest.
+        type: string
+        default: ubuntu-latest
+      go-version:
+        description: Go toolchain for the leak scanner and optionally the app; empty uses the runner default.
+        type: string
+        default: '1.25'
+      bun-version:
+        description: Bun version to install before app commands; empty skips installation.
+        type: string
+        default: ''
+      test-command:
+        description: Repository-owned full test command; empty skips.
+        type: string
+        default: ''
+      integration-command:
+        description: Repository-owned integration check command; empty skips.
+        type: string
+        default: ''
+      security-command:
+        description: Repository-owned heavier security validation command (for example vulnerability scanning); empty skips.
+        type: string
+        default: ''
+      leak-scan:
+        description: Scan full Git history for secrets.
+        type: boolean
+        default: true
+permissions:
+  contents: read
+jobs:
+  leaks:
+    if: inputs.leak-scan
+    runs-on: ${{ inputs.runner }}
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: ${{ inputs.go-version }}
+          cache: false
+      - name: Scan history for leaked secrets
+        run: go run github.com/zricethezav/gitleaks/v8@v8.30.1 git . --no-banner --redact
+  test:
+    if: inputs.test-command != ''
+    runs-on: ${{ inputs.runner }}
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - if: inputs.go-version != ''
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: ${{ inputs.go-version }}
+          cache: false
+      - if: inputs.bun-version != ''
+        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version: ${{ inputs.bun-version }}
+      - name: Test
+        env:
+          COMMAND: ${{ inputs.test-command }}
+        run: bash -euo pipefail -c "$COMMAND"
+  integration:
+    if: inputs.integration-command != ''
+    runs-on: ${{ inputs.runner }}
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - if: inputs.go-version != ''
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: ${{ inputs.go-version }}
+          cache: false
+      - if: inputs.bun-version != ''
+        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version: ${{ inputs.bun-version }}
+      - name: Integration checks
+        env:
+          COMMAND: ${{ inputs.integration-command }}
+        run: bash -euo pipefail -c "$COMMAND"
+  security:
+    if: inputs.security-command != ''
+    runs-on: ${{ inputs.runner }}
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - if: inputs.go-version != ''
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: ${{ inputs.go-version }}
+          cache: false
+      - if: inputs.bun-version != ''
+        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version: ${{ inputs.bun-version }}
+      - name: Security validation
+        env:
+          COMMAND: ${{ inputs.security-command }}
+        run: bash -euo pipefail -c "$COMMAND"

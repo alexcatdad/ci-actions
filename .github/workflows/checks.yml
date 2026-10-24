@@ -49,3 +49,16 @@ jobs:
           set -eu
           [[ "$DIGEST" =~ ^sha256:[a-f0-9]{64}$ ]]
           test "$IMAGE" = "ghcr.io/alexcatdad/service--worker__fixture@$DIGEST"
+  validation-pr-fixture:
+    if: github.event_name == 'pull_request'
+    uses: ./.github/workflows/validate-pr.yml
+    with:
+      lint-command: test -f README.md
+      build-command: echo synthetic build
+  validation-main-fixture:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    uses: ./.github/workflows/validate-main.yml
+    with:
+      test-command: echo synthetic test
+      integration-command: echo synthetic integration
+      security-command: echo synthetic security
