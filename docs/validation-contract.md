@@ -40,12 +40,16 @@ It does not depend on the calling event, so callers may invoke it from `push`
 to the default branch and from a `schedule` (for example a weekly run so the
 security command sees newly published advisories).
 
-`codeql.yml`: `languages` (required JSON array of `go`,
+`codeql.yml`: `languages` (required JSON array of `actions`, `go`,
 `javascript-typescript`, `swift`), `go-version` (default `1.27.3`),
 `swift-build-command` (traced in manual build mode; empty uses CodeQL
 autobuild), `swift-runner` (default `macos-26`), `queries` (default
-`security-extended`). Go and JavaScript/TypeScript run on `ubuntu-latest`;
-JavaScript/TypeScript uses build mode `none` and Go uses autobuild.
+`security-extended`). Actions, Go and JavaScript/TypeScript run on
+`ubuntu-latest`; Actions (the repository's GitHub Actions workflows) and
+JavaScript/TypeScript use build mode `none`, Go uses autobuild. Include
+`actions` so pull requests produce the `/language:actions` code scanning
+category; a code scanning ruleset blocks merges when the default branch has
+results for a category no pull request analyzes.
 
 Commands run with `bash -euo pipefail -c` from the repository root. They are
 passed through an environment variable, never interpolated into a script. Any
@@ -86,7 +90,7 @@ Consumers: scratchpad, usb-boop, pr-nanny, paw-proxy and menubar-kit. Migration
 per repository: add a workflow like the example calling the contracts with its
 own commands (for example its `task` targets), keep required-check names stable
 (`pr / leaks`, `pr / deps`, `pr / lint`, `pr / build`, `main / test`, and
-`codeql / <language>` such as `codeql / go` or `codeql / swift`), and remove any
+`codeql / <language>` such as `codeql / actions`, `codeql / go` or `codeql / swift`), and remove any
 release, publish or deploy jobs from its CI after the local release path is in
 use. `pr / deps` and the `codeql / *` checks are intended as required pull
 request checks. Dependency updates arrive as Dependabot alerts only; consumers

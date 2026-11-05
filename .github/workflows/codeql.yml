@@ -8,7 +8,7 @@ on:
   workflow_call:
     inputs:
       languages:
-        description: JSON array of CodeQL languages to analyze; any of "go", "javascript-typescript", "swift".
+        description: JSON array of CodeQL languages to analyze; any of "actions", "go", "javascript-typescript", "swift".
         type: string
         required: true
       go-version:
@@ -20,7 +20,7 @@ on:
         type: string
         default: ''
       swift-runner:
-        description: Runner label for swift analysis; go and javascript-typescript run on ubuntu-latest.
+        description: Runner label for swift analysis; actions, go and javascript-typescript run on ubuntu-latest.
         type: string
         default: macos-26
       queries:
@@ -47,7 +47,7 @@ jobs:
           LANGUAGE: ${{ matrix.language }}
         run: |
           case "$LANGUAGE" in
-            go|javascript-typescript|swift) ;;
+            actions|go|javascript-typescript|swift) ;;
             *) echo "::error::unsupported CodeQL language: $LANGUAGE"; exit 1 ;;
           esac
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -61,7 +61,7 @@ jobs:
       - uses: github/codeql-action/init@33d7b85da1a04171e211befe2c739303b9a4c066 # v4.39.3
         with:
           languages: ${{ matrix.language }}
-          build-mode: ${{ matrix.language == 'javascript-typescript' && 'none' || (matrix.language == 'swift' && inputs.swift-build-command != '' && 'manual') || 'autobuild' }}
+          build-mode: ${{ (matrix.language == 'actions' || matrix.language == 'javascript-typescript') && 'none' || (matrix.language == 'swift' && inputs.swift-build-command != '' && 'manual') || 'autobuild' }}
           queries: ${{ inputs.queries }}
       - if: matrix.language == 'swift' && inputs.swift-build-command != ''
         name: Build for analysis
