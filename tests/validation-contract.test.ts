@@ -104,7 +104,7 @@ describe('PR and main separation', () => {
     expect(deps.permissions).toEqual({ contents: 'read' });
     const review = deps.steps.find((step: any) => String(step.uses).startsWith('actions/dependency-review-action@'));
     expect(review.with['fail-on-severity']).toBe('high');
-    expect(review.with['allow-licenses']).toBe('MIT, Apache-2.0, BSD-2-Clause, BSD-3-Clause, ISC');
+    expect(review.with['allow-licenses']).toBe('MIT, Apache-2.0, BSD-2-Clause, BSD-3-Clause, ISC, LicenseRef-scancode-google-patent-license-golang');
   });
 
   test.each(validationNames)('%s defaults Go to 1.27.3 and offers optional Node with corepack', name => {
