@@ -1,0 +1,73 @@
+name: CodeQL
+# Validation-only code scanning: analyzes source with CodeQL and uploads the
+# SARIF result to the repository's code scanning alerts (where Copilot Autofix
+# can propose fixes). It never publishes, tags, signs, deploys or dispatches.
+# The analyze job holds the contract's single allowed write scope,
+# security-events: write, which only uploads code scanning results.
+on:
+  workflow_call:
+    inputs:
+      languages:
+        description: JSON array of CodeQL languages to analyze; any of "go", "javascript-typescript", "swift".
+        type: string
+        required: true
+      go-version:
+        description: Go toolchain installed before analyzing go.
+        type: string
+        default: '1.27.3'
+      swift-build-command:
+        description: Repository-owned build command traced for swift (manual build mode); empty uses CodeQL autobuild.
+        type: string
+        default: ''
+      swift-runner:
+        description: Runner label for swift analysis; go and javascript-typescript run on ubuntu-latest.
+        type: string
+        default: macos-26
+      queries:
+        description: CodeQL query suite.
+        type: string
+        default: security-extended
+permissions:
+  contents: read
+jobs:
+  analyze:
+    name: ${{ matrix.language }}
+    runs-on: ${{ matrix.language == 'swift' && inputs.swift-runner || 'ubuntu-latest' }}
+    timeout-minutes: 60
+    permissions:
+      contents: read
+      security-events: write
+    strategy:
+      fail-fast: false
+      matrix:
+        language: ${{ fromJSON(inputs.languages) }}
+    steps:
+      - name: Check language
+        env:
+          LANGUAGE: ${{ matrix.language }}
+        run: |
+          case "$LANGUAGE" in
+            go|javascript-typescript|swift) ;;
+            *) echo "::error::unsupported CodeQL language: $LANGUAGE"; exit 1 ;;
+          esac
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - if: matrix.language == 'go'
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: ${{ inputs.go-version }}
+          cache: false
+      - uses: github/codeql-action/init@33d7b85da1a04171e211befe2c739303b9a4c066 # v4.39.3
+        with:
+          languages: ${{ matrix.language }}
+          build-mode: ${{ matrix.language == 'javascript-typescript' && 'none' || (matrix.language == 'swift' && inputs.swift-build-command != '' && 'manual') || 'autobuild' }}
+          queries: ${{ inputs.queries }}
+      - if: matrix.language == 'swift' && inputs.swift-build-command != ''
+        name: Build for analysis
+        env:
+          COMMAND: ${{ inputs.swift-build-command }}
+        run: bash -euo pipefail -c "$COMMAND"
+      - uses: github/codeql-action/analyze@33d7b85da1a04171e211befe2c739303b9a4c066 # v4.39.3
+        with:
+          category: /language:${{ matrix.language }}

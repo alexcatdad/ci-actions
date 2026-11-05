@@ -1,14 +1,15 @@
 # Validation contract
 
-Two reusable workflows let application repositories report validation results
+Three reusable workflows let application repositories report validation results
 on GitHub. They validate and report only. Releases, tags, signing, publication,
 deployment and package-tap updates are performed by an explicitly invoked local
 tool and are outside these workflows.
 
 | Workflow | Event it is meant for | Jobs |
 | --- | --- | --- |
-| `validate-pr.yml` | pull requests | `leaks` (tree scan), `lint`, `build` |
-| `validate-main.yml` | push to the default branch | `leaks` (full history), `test`, `integration`, `security` |
+| `validate-pr.yml` | pull requests | `leaks` (tree scan), `deps` (dependency review), `lint`, `build` |
+| `validate-main.yml` | push to the default branch, or a schedule | `leaks` (full history), `test`, `integration`, `security` |
+| `codeql.yml` | pull requests, push to the default branch and a schedule | `analyze`, one check per language |
 
 Each command job is skipped when its input is empty, so a repository adopts only
 what it owns. Product-specific tests, packaging and distribution stay in the
@@ -16,13 +17,32 @@ application repository; the workflows run its commands and nothing else.
 
 ## Inputs
 
-Common: `runner` (default `ubuntu-latest`), `go-version` (default `1.25`; used
-for the leak scanner and available to app commands), `bun-version` (empty skips
-installation), `leak-scan` (default `true`).
+Common to `validate-pr.yml` and `validate-main.yml`: `runner` (default
+`ubuntu-latest`; the macOS applications pass `macos-26`), `go-version` (default
+`1.27.3`; used for the leak scanner and available to app commands; empty uses
+the runner default), `bun-version` (empty skips installation), `node-version`
+(empty skips installation; otherwise installs Node.js and runs `corepack enable`
+so commands can use pnpm or npm, installing a pinned corepack when the Node.js
+release no longer bundles it), `leak-scan` (default `true`).
 
-`validate-pr.yml`: `lint-command`, `build-command`.
+`validate-pr.yml`: `lint-command`, `build-command`, `dependency-review`
+(default `true`). The `deps` job runs `actions/dependency-review-action` on
+`ubuntu-latest` for `pull_request` events only, failing on newly introduced
+dependencies with `high` or `critical` advisories or with a license outside
+`MIT, Apache-2.0, BSD-2-Clause, BSD-3-Clause, ISC`. It reads the dependency
+graph with `contents: read`.
 
 `validate-main.yml`: `test-command`, `integration-command`, `security-command`.
+It does not depend on the calling event, so callers may invoke it from `push`
+to the default branch and from a `schedule` (for example a weekly run so the
+security command sees newly published advisories).
+
+`codeql.yml`: `languages` (required JSON array of `go`,
+`javascript-typescript`, `swift`), `go-version` (default `1.27.3`),
+`swift-build-command` (traced in manual build mode; empty uses CodeQL
+autobuild), `swift-runner` (default `macos-26`), `queries` (default
+`security-extended`). Go and JavaScript/TypeScript run on `ubuntu-latest`;
+JavaScript/TypeScript uses build mode `none` and Go uses autobuild.
 
 Commands run with `bash -euo pipefail -c` from the repository root. They are
 passed through an environment variable, never interpolated into a script. Any
@@ -31,15 +51,22 @@ by the runner. No secrets are declared or accepted.
 
 ## Permissions
 
-Every workflow and job sets `contents: read` and nothing else. The checkout does
-not persist credentials. Callers must grant at most `contents: read`; the
-contract tests reject `contents: write`, `packages: write` and `id-token: write`,
-and any release, tag, publish, deploy, dispatch or artifact-upload step.
+Every workflow and job sets `contents: read` and nothing else, with one
+documented exception: the `analyze` job of `codeql.yml` also holds
+`security-events: write`, which only uploads CodeQL results to the repository's
+code scanning alerts. The calling job for `codeql.yml` must grant exactly
+`contents: read` and `security-events: write`; every other caller grants at most
+`contents: read`. The checkout does not persist credentials. The contract tests
+reject any other write scope (including `contents: write`, `packages: write`
+and `id-token: write`) and any release, tag, publish, deploy, dispatch or
+artifact-upload step.
 
 ## Outputs and reports
 
 There are no workflow outputs. The result is the check status of each job plus
-its log. These are validation reports only. They are not distributables: nothing
+its log, and for `codeql.yml` the code scanning alerts in the Security tab,
+where Copilot Autofix (free for public repositories, enabled in repository
+settings) proposes fixes. These are validation reports only. They are not distributables: nothing
 produced in CI is a release artifact, and local release tooling must not
 require a green run or any CI artifact.
 
@@ -52,15 +79,19 @@ the local release tool, not to this repository.
 
 ## Consumer inventory and migration
 
-Intended consumers: scratchpad, usb-boop, pr-nanny and paw-proxy. Migration per
-repository: add a workflow like the example calling both contracts with its own
-commands (for example its `task` targets), keep required-check names stable
-(`pr / lint`, `pr / build`, `main / test` and so on), and remove any release,
-publish or deploy jobs from its CI after the local release path is in use.
+Consumers: scratchpad, usb-boop, pr-nanny, paw-proxy and menubar-kit. Migration
+per repository: add a workflow like the example calling the contracts with its
+own commands (for example its `task` targets), keep required-check names stable
+(`pr / leaks`, `pr / deps`, `pr / lint`, `pr / build`, `main / test`, and
+`codeql / <language>` such as `codeql / go` or `codeql / swift`), and remove any
+release, publish or deploy jobs from its CI after the local release path is in
+use. `pr / deps` and the `codeql / *` checks are intended as required pull
+request checks. Dependency updates arrive as Dependabot alerts only; consumers
+do not enable Dependabot version-update pull requests.
 
 The `image-build.yml`, `image-tag-release.yml`, `deploy.yml` and `rollout.yml`
-workflows are unchanged and remain for unrelated consumers. None of the four
-applications may call them for releases. Removing them would need a separate
+workflows are unchanged and remain for unrelated consumers. None of the consumers
+above may call them for releases. Removing them would need a separate
 consumer audit and migration.
 
 ## Scanner
