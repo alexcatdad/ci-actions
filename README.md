@@ -255,8 +255,11 @@ for the optional bounded Actions usage sample.
 
 ## Validation contract
 
-`validate-pr.yml` (leak scan, lint, build) and `validate-main.yml` (history leak
-scan, tests, integration, security) are validation-only reusable workflows with
-`contents: read` permissions and no release, publish, deploy or dispatch
-capability. See the [validation contract](docs/validation-contract.md) for
+`validate-pr.yml` (leak scan, dependency review, lint, build),
+`validate-main.yml` (history leak scan, tests, integration, security; callable
+from push or a schedule) and `codeql.yml` (CodeQL code scanning) are
+validation-only reusable workflows with `contents: read` permissions and no
+release, publish, deploy or dispatch capability. The single exception is
+`security-events: write` on the CodeQL `analyze` job, used only to upload code
+scanning results. See the [validation contract](docs/validation-contract.md) for
 inputs, pinning and migration.
