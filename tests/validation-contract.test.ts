@@ -153,10 +153,19 @@ describe('codeql contract', () => {
     expect(analyze['runs-on']).toBe("${{ matrix.language == 'swift' && inputs.swift-runner || 'ubuntu-latest' }}");
   });
 
-  test('rejects languages outside go, javascript-typescript and swift', () => {
+  test('rejects languages outside actions, go, javascript-typescript and swift', () => {
     const check = analyze.steps[0];
-    expect(check.run).toContain('go|javascript-typescript|swift) ;;');
+    expect(check.run).toContain('actions|go|javascript-typescript|swift) ;;');
     expect(check.run).toContain('exit 1');
+  });
+
+  test('analyzes actions and javascript-typescript without a build', () => {
+    const init = analyze.steps.find((step: any) => String(step.uses).startsWith('github/codeql-action/init@'));
+    expect(init.with['build-mode']).toBe("${{ (matrix.language == 'actions' || matrix.language == 'javascript-typescript') && 'none' || (matrix.language == 'swift' && inputs.swift-build-command != '' && 'manual') || 'autobuild' }}");
+    const setupGo = analyze.steps.find((step: any) => String(step.uses).startsWith('actions/setup-go@'));
+    expect(setupGo.if).toBe("matrix.language == 'go'");
+    const build = analyze.steps.find((step: any) => step.name === 'Build for analysis');
+    expect(build.if).toContain("matrix.language == 'swift'");
   });
 
   test('pins init and analyze to the same codeql-action commit', () => {

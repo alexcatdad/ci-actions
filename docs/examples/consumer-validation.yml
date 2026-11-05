@@ -39,5 +39,5 @@ jobs:
       security-events: write
     uses: alexcatdad/ci-actions/.github/workflows/codeql.yml@REVIEWED_COMMIT_SHA
     with:
-      languages: '["go", "swift"]'
+      languages: '["actions", "go", "swift"]'
       swift-build-command: task build
