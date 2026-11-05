@@ -1,6 +1,9 @@
 name: Shared workflow checks
+# push is limited to main so branch pushes with an open pull request do not run
+# every check twice; pull requests cover branches.
 on:
   push:
+    branches: [main]
   pull_request:
   workflow_dispatch:
 permissions:
