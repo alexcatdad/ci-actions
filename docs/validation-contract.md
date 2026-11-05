@@ -29,8 +29,11 @@ release no longer bundles it), `leak-scan` (default `true`).
 (default `true`). The `deps` job runs `actions/dependency-review-action` on
 `ubuntu-latest` for `pull_request` events only, failing on newly introduced
 dependencies with `high` or `critical` advisories or with a license outside
-`MIT, Apache-2.0, BSD-2-Clause, BSD-3-Clause, ISC`. It reads the dependency
-graph with `contents: read`.
+`MIT, Apache-2.0, BSD-2-Clause, BSD-3-Clause, ISC,
+LicenseRef-scancode-google-patent-license-golang`. The last entry is the Go
+project's additional patent grant (`PATENTS`), which every `golang.org/x`
+module carries alongside BSD-3-Clause; without it every Go dependency on those
+modules fails the check. It reads the dependency graph with `contents: read`.
 
 `validate-main.yml`: `test-command`, `integration-command`, `security-command`.
 It does not depend on the calling event, so callers may invoke it from `push`
