@@ -190,6 +190,11 @@ describe('documented consumer example', () => {
     expect(example.jobs.pr.with['test-command']).toBeUndefined();
   });
 
+  test('limits push to main so pull request branches are not validated twice', () => {
+    expect(trigger(example).push).toEqual({ branches: ['main'] });
+    expect(Object.keys(trigger(example))).toEqual(['pull_request', 'push', 'schedule']);
+  });
+
   test('runs main validation and CodeQL on a weekly schedule', () => {
     expect(trigger(example).schedule).toHaveLength(1);
     expect(example.jobs.main.if).toContain('schedule');
@@ -200,6 +205,14 @@ describe('documented consumer example', () => {
   test('never calls the image, deploy or rollout workflows', async () => {
     const text = await Bun.file('docs/examples/consumer-validation.yml').text();
     expect(text).not.toMatch(/image-build|image-tag-release|deploy\.yml|rollout\.yml/);
+  });
+});
+
+describe('repository checks workflow', () => {
+  test('runs on pull requests, manual dispatch and pushes to main only', async () => {
+    const checks = await load('.github/workflows/checks.yml');
+    expect(trigger(checks).push).toEqual({ branches: ['main'] });
+    expect(Object.keys(trigger(checks))).toEqual(['push', 'pull_request', 'workflow_dispatch']);
   });
 });
 

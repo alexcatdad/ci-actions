@@ -15,6 +15,15 @@ Each command job is skipped when its input is empty, so a repository adopts only
 what it owns. Product-specific tests, packaging and distribution stay in the
 application repository; the workflows run its commands and nothing else.
 
+## Caller triggers
+
+Callers trigger on `pull_request`, on `push` with `branches: [main]` (the
+default branch only) and on a weekly `schedule`; `workflow_dispatch` may be
+added. Do not use an unfiltered `push` trigger: a branch with an open pull
+request would then run every check twice, once per event. Route
+`pull_request` to `validate-pr.yml`, `push` and `schedule` to
+`validate-main.yml`, and all three to `codeql.yml`.
+
 ## Inputs
 
 Common to `validate-pr.yml` and `validate-main.yml`: `runner` (default

@@ -2,7 +2,8 @@
 # .github/workflows/validation.yml and replace REVIEWED_COMMIT_SHA with a
 # reviewed full commit SHA of this repository. Commands are repository-owned.
 # The weekly schedule reruns the main contract (security scans pick up new
-# advisories) and CodeQL against the default branch.
+# advisories) and CodeQL against the default branch. push is limited to main so
+# a branch with an open pull request does not run every check twice.
 name: Validation
 on:
   pull_request:
