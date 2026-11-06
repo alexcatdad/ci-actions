@@ -7,7 +7,7 @@ tool and are outside these workflows.
 
 | Workflow | Event it is meant for | Jobs |
 | --- | --- | --- |
-| `validate-pr.yml` | pull requests | `leaks` (tree scan), `deps` (dependency review), `lint`, `build` |
+| `validate-pr.yml` | pull requests | `leaks` (tree scan), `deps` (dependency review), `lint`, `build`, `test` |
 | `validate-main.yml` | push to the default branch, or a schedule | `leaks` (full history), `test`, `integration`, `security` |
 | `codeql.yml` | pull requests, push to the default branch and a schedule | `analyze`, one check per language |
 
@@ -34,8 +34,10 @@ the runner default), `bun-version` (empty skips installation), `node-version`
 so commands can use pnpm or npm, installing a pinned corepack when the Node.js
 release no longer bundles it), `leak-scan` (default `true`).
 
-`validate-pr.yml`: `lint-command`, `build-command`, `dependency-review`
-(default `true`). The `deps` job runs `actions/dependency-review-action` on
+`validate-pr.yml`: `lint-command`, `build-command`, `test-command`,
+`dependency-review` (default `true`). `test-command` runs the repository's tests
+on the pull request so a change that breaks them cannot merge; pass the same
+command as to `validate-main.yml`. The `deps` job runs `actions/dependency-review-action` on
 `ubuntu-latest` for `pull_request` events only, failing on newly introduced
 dependencies with `high` or `critical` advisories or with a license outside
 `MIT, Apache-2.0, BSD-2-Clause, BSD-3-Clause, ISC,
@@ -45,7 +47,7 @@ module carries alongside BSD-3-Clause; without it every Go dependency on those
 modules fails the check. It reads the dependency graph with `contents: read`.
 
 `validate-main.yml`: `test-command`, `integration-command`, `security-command`.
-It does not depend on the calling event, so callers may invoke it from `push`
+Its `test` job reruns the tests after merge. It does not depend on the calling event, so callers may invoke it from `push`
 to the default branch and from a `schedule` (for example a weekly run so the
 security command sees newly published advisories).
 
@@ -98,11 +100,13 @@ the local release tool, not to this repository.
 Consumers: scratchpad, usb-boop, pr-nanny, paw-proxy and menubar-kit. Migration
 per repository: add a workflow like the example calling the contracts with its
 own commands (for example its `task` targets), keep required-check names stable
-(`pr / leaks`, `pr / deps`, `pr / lint`, `pr / build`, `main / test`, and
+(`pr / leaks`, `pr / deps`, `pr / lint`, `pr / build`, `pr / test`, `main / test`, and
 `codeql / <language>` such as `codeql / actions`, `codeql / go` or `codeql / swift`), and remove any
 release, publish or deploy jobs from its CI after the local release path is in
-use. `pr / deps` and the `codeql / *` checks are intended as required pull
-request checks. Dependency updates arrive as Dependabot alerts only; consumers
+use. `pr / leaks`, `pr / deps`, `pr / lint`, `pr / build`, `pr / test` and the
+`codeql / *` checks are intended as required pull request checks; consumers
+that pass `test-command` should require `pr / test` in their default-branch
+ruleset. Dependency updates arrive as Dependabot alerts only; consumers
 do not enable Dependabot version-update pull requests.
 
 The `image-build.yml`, `image-tag-release.yml`, `deploy.yml` and `rollout.yml`

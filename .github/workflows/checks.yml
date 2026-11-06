@@ -58,6 +58,7 @@ jobs:
     with:
       lint-command: test -f README.md
       build-command: echo synthetic build
+      test-command: echo synthetic test
   validation-main-fixture:
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     uses: ./.github/workflows/validate-main.yml
