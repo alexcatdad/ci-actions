@@ -90,10 +90,21 @@ describe.each(names)('%s', name => {
 describe('PR and main separation', () => {
   const inputs = (name: string) => Object.keys(trigger(workflows[name]).workflow_call.inputs);
 
-  test('PR contract covers leak, dependency review, lint and build only', () => {
-    expect(Object.keys(workflows['validate-pr'].jobs)).toEqual(['leaks', 'deps', 'lint', 'build']);
-    expect(inputs('validate-pr')).toEqual(expect.arrayContaining(['lint-command', 'build-command', 'dependency-review']));
-    expect(inputs('validate-pr')).not.toContain('test-command');
+  test('PR contract covers leak, dependency review, lint, build and test only', () => {
+    expect(Object.keys(workflows['validate-pr'].jobs)).toEqual(['leaks', 'deps', 'lint', 'build', 'test']);
+    expect(inputs('validate-pr')).toEqual(expect.arrayContaining(['lint-command', 'build-command', 'test-command', 'dependency-review']));
+  });
+
+  test('PR test job is skipped without a command and runs it through env', () => {
+    const declared = trigger(workflows['validate-pr']).workflow_call.inputs;
+    expect(declared['test-command'].default).toBe('');
+    const job = workflows['validate-pr'].jobs.test;
+    expect(job.if).toBe("inputs.test-command != ''");
+    expect(job['runs-on']).toBe('${{ inputs.runner }}');
+    expect(job.permissions).toEqual({ contents: 'read' });
+    const run = job.steps.find((step: any) => step.name === 'Test');
+    expect(run.env).toEqual({ COMMAND: '${{ inputs.test-command }}' });
+    expect(run.run).toBe('bash -euo pipefail -c "$COMMAND"');
   });
 
   test('dependency review blocks high severity and non-allowlisted licenses on pull requests', () => {
@@ -187,7 +198,7 @@ describe('documented consumer example', () => {
       expect(job.permissions, id).toEqual(expected);
       expect(job.secrets).toBeUndefined();
     }
-    expect(example.jobs.pr.with['test-command']).toBeUndefined();
+    expect(example.jobs.pr.with['test-command']).toBe(example.jobs.main.with['test-command']);
   });
 
   test('limits push to main so pull request branches are not validated twice', () => {

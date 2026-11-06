@@ -23,6 +23,7 @@ jobs:
       runner: macos-26
       lint-command: task lint
       build-command: task build
+      test-command: task test
   main:
     if: github.event_name == 'push' || github.event_name == 'schedule'
     permissions:
