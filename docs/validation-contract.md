@@ -161,8 +161,10 @@ Inputs: `slot` (required; lower-case letters, digits and hyphens), `runner`
 (default `self-hosted`; the label of the repository's deploy runner) and
 `timeout-minutes` (default `60`). No secrets. The job runs only for a `push`
 or `workflow_dispatch` on the default branch and runs one command,
-`sudo --non-interactive homelab-deploy-slot <slot> <github.sha>`, on the
-repository's own self-hosted runner. It uses no actions at all, not even
+`homelab-deploy-slot <slot> <github.sha>`, on the repository's own
+self-hosted runner, as the runner's unprivileged user: the host, not the
+workflow, grants the one privileged step (on the homelab, a polkit rule lets
+each runner start the root deploy unit for its own slot only). It uses no actions at all, not even
 checkout, and holds no token permissions (`permissions: {}`): the runner
 connects outbound only, and the host checks that the commit is the tip of
 `main`, builds it from GitHub itself, scans it with vulnix, switches the slot's

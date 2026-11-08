@@ -1,7 +1,8 @@
 name: Slot deploy
 # Deploys one homelab slot after its validation passed on the default branch.
 # Runs on the caller repository's own self-hosted runner, which connects
-# outbound only and may run nothing but `homelab-deploy-slot`. The host checks
+# outbound only and may run nothing but `homelab-deploy-slot`, as its own
+# unprivileged user (the host decides how it reaches root). The host checks
 # that the commit is the tip of main, builds it from GitHub itself, scans it,
 # switches the slot's profile, checks health and rolls back on failure. No
 # artifact, checkout, secret or third-party action is involved here.
@@ -43,4 +44,4 @@ jobs:
           set -euo pipefail
           [[ "$SLOT" =~ ^[a-z0-9][a-z0-9-]{0,62}$ ]] || { echo "invalid slot name: $SLOT" >&2; exit 1; }
           [[ "$COMMIT" =~ ^[0-9a-f]{40}$ ]] || { echo "invalid commit: $COMMIT" >&2; exit 1; }
-          sudo --non-interactive homelab-deploy-slot "$SLOT" "$COMMIT"
+          homelab-deploy-slot "$SLOT" "$COMMIT"
