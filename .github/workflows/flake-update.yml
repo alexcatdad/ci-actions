@@ -1,0 +1,128 @@
+name: Flake update
+# Nightly flake.lock update for Nix repositories, the one documented exception
+# to the alerts-only dependency rule. Runs `nix flake update` on the base
+# branch. When flake.lock changes it force-pushes a single commit to one update
+# branch and opens a pull request, or updates the one still open from a
+# previous night. With no change it does nothing. A GitHub App token opens the
+# pull request because pull requests created with GITHUB_TOKEN start no other
+# workflows, so validation would never run on them.
+on:
+  workflow_call:
+    inputs:
+      runner:
+        description: Runner label; default is GitHub-hosted ubuntu-latest.
+        type: string
+        default: ubuntu-latest
+      base:
+        description: Branch whose flake.lock is updated and that the pull request targets.
+        type: string
+        default: main
+      branch:
+        description: Update branch the bot owns and force-pushes; one pull request per branch.
+        type: string
+        default: flake-update
+    secrets:
+      app-client-id:
+        description: Client ID of the GitHub App that pushes the update branch and opens the pull request.
+        required: true
+      app-private-key:
+        description: Private key of that GitHub App.
+        required: true
+permissions:
+  contents: read
+jobs:
+  update:
+    runs-on: ${{ inputs.runner }}
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    concurrency:
+      group: flake-update-${{ github.repository }}
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ inputs.base }}
+          persist-credentials: false
+      # Read-only token for the owner's repositories so Nix can fetch private
+      # flake inputs; it never reaches git or gh.
+      - id: read-token
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        with:
+          client-id: ${{ secrets.app-client-id }}
+          private-key: ${{ secrets.app-private-key }}
+          owner: ${{ github.repository_owner }}
+          permission-contents: read
+      - uses: cachix/install-nix-action@75c75c31ebece974e48ebc36b4ad125bd97bd97b # v31.11.3
+        with:
+          install_url: https://releases.nixos.org/nix/nix-2.35.4/install
+          github_access_token: ${{ steps.read-token.outputs.token }}
+      - id: update
+        name: Update flake.lock
+        run: |
+          set -euo pipefail
+          nix flake update 2>&1 | tee "$RUNNER_TEMP/flake-update.log"
+          if [ -z "$(git status --porcelain -- flake.lock)" ]; then
+            echo "flake.lock is unchanged"
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          fi
+      # Write token for this repository only, minted after Nix has run.
+      - id: write-token
+        if: steps.update.outputs.changed == 'true'
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        with:
+          client-id: ${{ secrets.app-client-id }}
+          private-key: ${{ secrets.app-private-key }}
+          permission-contents: write
+          permission-pull-requests: write
+      - name: Open or update the pull request
+        if: steps.update.outputs.changed == 'true'
+        env:
+          GH_TOKEN: ${{ steps.write-token.outputs.token }}
+          APP_SLUG: ${{ steps.write-token.outputs.app-slug }}
+          REPO: ${{ github.repository }}
+          BASE: ${{ inputs.base }}
+          BRANCH: ${{ inputs.branch }}
+        run: |
+          set -euo pipefail
+          [[ "$BRANCH" != "$BASE" && "$BRANCH" =~ ^[A-Za-z0-9._/-]+$ ]] || { echo "invalid update branch: $BRANCH" >&2; exit 1; }
+          auth=$(printf 'x-access-token:%s' "$GH_TOKEN" | base64 | tr -d '\n')
+          echo "::add-mask::$auth"
+          git_auth=(-c "http.https://github.com/.extraheader=AUTHORIZATION: basic $auth")
+          open_pr() {
+            gh pr list --repo "$REPO" --head "$BRANCH" --base "$BASE" --state open --json number --jq '.[0].number // empty'
+          }
+          # Nothing to do when the open pull request already holds this exact
+          # lock on top of the current base.
+          if git "${git_auth[@]}" fetch --quiet --depth=2 origin "refs/heads/$BRANCH" 2>/dev/null \
+            && [ "$(git rev-parse FETCH_HEAD^)" = "$(git rev-parse HEAD)" ] \
+            && git diff --quiet FETCH_HEAD -- flake.lock \
+            && [ -n "$(open_pr)" ]; then
+            echo "The open pull request already carries this flake.lock"
+            exit 0
+          fi
+          bot="${APP_SLUG}[bot]"
+          bot_id=$(gh api "users/${bot}" --jq .id)
+          git config user.name "$bot"
+          git config user.email "${bot_id}+${bot}@users.noreply.github.com"
+          body="$RUNNER_TEMP/flake-update.md"
+          tick='`'
+          {
+            echo "Nightly ${tick}nix flake update${tick} on ${tick}${BASE}${tick}."
+            echo
+            echo "${tick}${tick}${tick}"
+            cat "$RUNNER_TEMP/flake-update.log"
+            echo "${tick}${tick}${tick}"
+          } > "$body"
+          git add flake.lock
+          git commit --quiet -m "Update flake.lock" -m "$(cat "$RUNNER_TEMP/flake-update.log")"
+          git "${git_auth[@]}" push --force origin "HEAD:refs/heads/$BRANCH"
+          pr=$(open_pr)
+          if [ -n "$pr" ]; then
+            gh pr edit "$pr" --repo "$REPO" --body-file "$body"
+            echo "Updated pull request #$pr"
+          else
+            gh pr create --repo "$REPO" --base "$BASE" --head "$BRANCH" --title "Update flake.lock" --body-file "$body"
+          fi

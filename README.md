@@ -261,5 +261,16 @@ from push or a schedule) and `codeql.yml` (CodeQL code scanning) are
 validation-only reusable workflows with `contents: read` permissions and no
 release, publish, deploy or dispatch capability. The single exception is
 `security-events: write` on the CodeQL `analyze` job, used only to upload code
-scanning results. See the [validation contract](docs/validation-contract.md) for
-inputs, pinning and migration.
+scanning results. Both validation workflows accept `nix: true` to install a
+pinned Nix, with optional GitHub App secrets for private flake inputs. See the
+[validation contract](docs/validation-contract.md) for inputs, pinning and
+migration.
+
+Deploys are separate from validation. `slot-deploy.yml` runs
+`homelab-deploy-slot` for one slot on the caller repository's own self-hosted
+runner, as a separate caller job after the main validation jobs pass; it uses no
+actions, secrets or token permissions. `flake-update.yml` runs nightly in Nix
+repositories and opens or updates one `flake.lock` pull request through a GitHub
+App token, the documented exception to alerts-only dependency updates.
+`deploy.yml` (Kubernetes, retired cluster) remains only for one pinned caller;
+`rollout.yml` is removed.

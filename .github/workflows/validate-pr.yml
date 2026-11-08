@@ -20,6 +20,10 @@ on:
         description: Node.js version to install (with corepack enabled for pnpm or npm) before app commands; empty skips installation.
         type: string
         default: ''
+      nix:
+        description: Install Nix 2.35.4 (flakes enabled) before app commands; false skips installation.
+        type: boolean
+        default: false
       lint-command:
         description: Repository-owned lint command run from the repository root; empty skips.
         type: string
@@ -40,6 +44,13 @@ on:
         description: Fail the pull request on newly introduced dependencies with high or critical advisories or disallowed licenses.
         type: boolean
         default: true
+    secrets:
+      app-client-id:
+        description: Optional GitHub App client ID. With app-private-key and nix, mints a contents-read installation token that Nix uses to fetch private flake inputs of the repository owner.
+        required: false
+      app-private-key:
+        description: Optional GitHub App private key paired with app-client-id.
+        required: false
 permissions:
   contents: read
 jobs:
@@ -80,6 +91,9 @@ jobs:
     timeout-minutes: 15
     permissions:
       contents: read
+    env:
+      # Gates the optional Nix token step; a client ID is not a credential.
+      NIX_APP_CLIENT_ID: ${{ inputs.nix && secrets.app-client-id || '' }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
@@ -101,6 +115,19 @@ jobs:
         name: Enable corepack
         # Node 25+ no longer bundles corepack; install a pinned copy when absent.
         run: command -v corepack >/dev/null || npm install --global corepack@0.36.0; corepack enable
+      - if: env.NIX_APP_CLIENT_ID != ''
+        id: nix-token
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        with:
+          client-id: ${{ env.NIX_APP_CLIENT_ID }}
+          private-key: ${{ secrets.app-private-key }}
+          owner: ${{ github.repository_owner }}
+          permission-contents: read
+      - if: inputs.nix
+        uses: cachix/install-nix-action@75c75c31ebece974e48ebc36b4ad125bd97bd97b # v31.11.3
+        with:
+          install_url: https://releases.nixos.org/nix/nix-2.35.4/install
+          github_access_token: ${{ steps.nix-token.outputs.token }}
       - name: Lint
         env:
           COMMAND: ${{ inputs.lint-command }}
@@ -111,6 +138,9 @@ jobs:
     timeout-minutes: 20
     permissions:
       contents: read
+    env:
+      # Gates the optional Nix token step; a client ID is not a credential.
+      NIX_APP_CLIENT_ID: ${{ inputs.nix && secrets.app-client-id || '' }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
@@ -132,6 +162,19 @@ jobs:
         name: Enable corepack
         # Node 25+ no longer bundles corepack; install a pinned copy when absent.
         run: command -v corepack >/dev/null || npm install --global corepack@0.36.0; corepack enable
+      - if: env.NIX_APP_CLIENT_ID != ''
+        id: nix-token
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        with:
+          client-id: ${{ env.NIX_APP_CLIENT_ID }}
+          private-key: ${{ secrets.app-private-key }}
+          owner: ${{ github.repository_owner }}
+          permission-contents: read
+      - if: inputs.nix
+        uses: cachix/install-nix-action@75c75c31ebece974e48ebc36b4ad125bd97bd97b # v31.11.3
+        with:
+          install_url: https://releases.nixos.org/nix/nix-2.35.4/install
+          github_access_token: ${{ steps.nix-token.outputs.token }}
       - name: Build
         env:
           COMMAND: ${{ inputs.build-command }}
@@ -142,6 +185,9 @@ jobs:
     timeout-minutes: 30
     permissions:
       contents: read
+    env:
+      # Gates the optional Nix token step; a client ID is not a credential.
+      NIX_APP_CLIENT_ID: ${{ inputs.nix && secrets.app-client-id || '' }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
@@ -163,6 +209,19 @@ jobs:
         name: Enable corepack
         # Node 25+ no longer bundles corepack; install a pinned copy when absent.
         run: command -v corepack >/dev/null || npm install --global corepack@0.36.0; corepack enable
+      - if: env.NIX_APP_CLIENT_ID != ''
+        id: nix-token
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        with:
+          client-id: ${{ env.NIX_APP_CLIENT_ID }}
+          private-key: ${{ secrets.app-private-key }}
+          owner: ${{ github.repository_owner }}
+          permission-contents: read
+      - if: inputs.nix
+        uses: cachix/install-nix-action@75c75c31ebece974e48ebc36b4ad125bd97bd97b # v31.11.3
+        with:
+          install_url: https://releases.nixos.org/nix/nix-2.35.4/install
+          github_access_token: ${{ steps.nix-token.outputs.token }}
       - name: Test
         env:
           COMMAND: ${{ inputs.test-command }}

@@ -56,9 +56,10 @@ jobs:
     if: github.event_name == 'pull_request'
     uses: ./.github/workflows/validate-pr.yml
     with:
+      nix: true
       lint-command: test -f README.md
       build-command: echo synthetic build
-      test-command: echo synthetic test
+      test-command: nix --version | grep -F 2.35.4
   validation-main-fixture:
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     uses: ./.github/workflows/validate-main.yml
