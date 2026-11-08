@@ -159,7 +159,9 @@ consumers above may call these workflows for releases.
 
 Inputs: `slot` (required; lower-case letters, digits and hyphens), `runner`
 (default `self-hosted`; the label of the repository's deploy runner) and
-`timeout-minutes` (default `60`). No secrets. The job runs only for a `push`
+`timeout-minutes` (default `60`). No secrets. Each run is recorded as a
+deployment to the environment `homelab-<slot>` (created on first use), so the
+repository's Deployments page shows which commit is live on the homelab. The job runs only for a `push`
 or `workflow_dispatch` on the default branch and runs one command,
 `homelab-deploy-slot <slot> <github.sha>`, on the repository's own
 self-hosted runner, as the runner's unprivileged user: the host, not the
