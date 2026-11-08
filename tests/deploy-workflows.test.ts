@@ -43,8 +43,9 @@ describe('slot-deploy', () => {
     expect(step.run).not.toContain('${{');
     expect(step.run).toContain('[[ "$SLOT" =~ ^[a-z0-9][a-z0-9-]{0,62}$ ]]');
     expect(step.run).toContain('[[ "$COMMIT" =~ ^[0-9a-f]{40}$ ]]');
-    const commands = step.run.split('\n').filter((line: string) => /\bsudo\b/.test(line));
-    expect(commands).toEqual(['sudo --non-interactive homelab-deploy-slot "$SLOT" "$COMMIT"']);
+    const commands = step.run.split('\n').map((line: string) => line.trim()).filter((line: string) => /\bhomelab-deploy-slot\b/.test(line));
+    expect(commands).toEqual(['homelab-deploy-slot "$SLOT" "$COMMIT"']);
+    expect(step.run).not.toMatch(/\bsudo\b/);
   });
 
   test('serializes per repository and slot without cancelling a running deploy', () => {
