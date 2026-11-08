@@ -49,13 +49,25 @@ describe.each(names)('%s', name => {
     expect(writes.map(line => line.trim())).toEqual(expected.map(([scope]) => `${scope}: write`));
   });
 
-  test('declares no secrets and does not use secrets or tokens', () => {
-    expect(trigger(workflow).workflow_call.secrets).toBeUndefined();
-    expect(sources[name]).not.toMatch(/\$\{\{\s*secrets\.|^\s*secrets:|github\.token|GITHUB_TOKEN|GH_TOKEN/m);
+  test('declares only the optional Nix App secrets and uses them only for the Nix token', () => {
+    const secrets = trigger(workflow).workflow_call.secrets;
+    if (name === 'codeql') {
+      expect(secrets).toBeUndefined();
+      expect(sources[name]).not.toMatch(/\$\{\{\s*secrets\.|^\s*secrets:/m);
+    } else {
+      expect(Object.keys(secrets)).toEqual(['app-client-id', 'app-private-key']);
+      for (const secret of Object.values<any>(secrets)) expect(secret.required).toBe(false);
+      const uses = stripComments(sources[name]).match(/^.*\$\{\{[^}]*secrets\..*$/gm) ?? [];
+      expect(uses.length).toBeGreaterThan(0);
+      for (const line of uses) {
+        expect(line.trim()).toMatch(/^(NIX_APP_CLIENT_ID: \$\{\{ inputs\.nix && secrets\.app-client-id \|\| '' \}\}|private-key: \$\{\{ secrets\.app-private-key \}\})$/);
+      }
+    }
+    expect(sources[name]).not.toMatch(/github\.token|GITHUB_TOKEN|GH_TOKEN/);
   });
 
   test('has no release, tag, publish, deploy or dispatch capability', () => {
-    const forbidden = /\b(git\s+(tag|push)|gh\s+(release|workflow|api|pr)|docker\s+(push|login)|npm\s+publish|goreleaser|cosign|brew\b|kubectl|helm\b|workflow_dispatch|repository_dispatch|upload-release-asset|create-release|attest|upload-artifact|ghcr\.io|image-build|image-tag-release|deploy\.yml|rollout\.yml)\b/i;
+    const forbidden = /\b(git\s+(tag|push)|gh\s+(release|workflow|api|pr)|docker\s+(push|login)|npm\s+publish|goreleaser|cosign|brew\b|kubectl|helm\b|workflow_dispatch|repository_dispatch|upload-release-asset|create-release|attest|upload-artifact|ghcr\.io|image-build|image-tag-release|deploy\.yml|rollout\.yml|slot-deploy|flake-update|homelab-deploy-slot|sudo)\b/i;
     expect(sources[name].replace(/^\s*#.*$/gm, '')).not.toMatch(forbidden);
     for (const step of allSteps(workflow)) {
       expect(String(step.uses ?? '')).not.toMatch(/release|publish|deploy|dispatch|docker\/(build|login)|attest|cosign/i);
@@ -132,6 +144,44 @@ describe('PR and main separation', () => {
       expect(steps[nodeIndex + 1].if).toBe("inputs.node-version != ''");
       expect(steps[nodeIndex + 1].run).toContain('corepack enable');
     }
+  });
+
+  test.each(validationNames)('%s installs pinned Nix only on request, with an optional read-only App token', name => {
+    const declared = trigger(workflows[name]).workflow_call.inputs;
+    expect(declared.nix).toEqual(expect.objectContaining({ type: 'boolean', default: false }));
+    let nixJobs = 0;
+    for (const [id, job] of Object.entries<any>(workflows[name].jobs)) {
+      const steps = job.steps ?? [];
+      const nodeIndex = steps.findIndex((step: any) => String(step.uses).startsWith('actions/setup-node@'));
+      const tokenIndex = steps.findIndex((step: any) => step.id === 'nix-token');
+      const nixIndex = steps.findIndex((step: any) => String(step.uses).startsWith('cachix/install-nix-action@'));
+      expect(nixIndex >= 0, id).toBe(nodeIndex >= 0);
+      if (nixIndex < 0) {
+        expect(tokenIndex, id).toBe(-1);
+        expect(job.env, id).toBeUndefined();
+        continue;
+      }
+      nixJobs++;
+      expect(job.env, id).toEqual({ NIX_APP_CLIENT_ID: "${{ inputs.nix && secrets.app-client-id || '' }}" });
+      expect(tokenIndex, id).toBe(nixIndex - 1);
+      const token = steps[tokenIndex];
+      expect(token.if).toBe("env.NIX_APP_CLIENT_ID != ''");
+      expect(String(token.uses)).toStartWith('actions/create-github-app-token@');
+      expect(token.with).toEqual({
+        'client-id': '${{ env.NIX_APP_CLIENT_ID }}',
+        'private-key': '${{ secrets.app-private-key }}',
+        owner: '${{ github.repository_owner }}',
+        'permission-contents': 'read',
+      });
+      const nix = steps[nixIndex];
+      expect(nix.if).toBe('inputs.nix');
+      expect(nix.with).toEqual({
+        install_url: 'https://releases.nixos.org/nix/nix-2.35.4/install',
+        github_access_token: '${{ steps.nix-token.outputs.token }}',
+      });
+      expect(steps[nixIndex + 1].env?.COMMAND, id).toBeDefined();
+    }
+    expect(nixJobs).toBe(3);
   });
 
   test('main contract covers history leak scan, tests, integration and security', () => {
@@ -227,8 +277,12 @@ describe('repository checks workflow', () => {
   });
 });
 
-describe('existing shared workflows are retained', () => {
-  test.each(['image-build', 'image-tag-release', 'deploy', 'rollout'])('%s.yml exists', async name => {
+describe('existing shared workflows', () => {
+  test.each(['image-build', 'image-tag-release', 'deploy'])('%s.yml is retained', async name => {
     expect(await Bun.file(`.github/workflows/${name}.yml`).exists()).toBe(true);
+  });
+
+  test('rollout.yml is retired', async () => {
+    expect(await Bun.file('.github/workflows/rollout.yml').exists()).toBe(false);
   });
 });
