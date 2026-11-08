@@ -24,6 +24,10 @@ describe('slot-deploy', () => {
     expect(call.inputs['timeout-minutes'].default).toBeGreaterThan(0);
   });
 
+  test('records each run as a deployment to homelab-<slot>', () => {
+    expect(job.environment).toBe('homelab-${{ inputs.slot }}');
+  });
+
   test('holds no token permissions, secrets or actions of any kind', () => {
     expect(workflow.permissions).toEqual({});
     expect(job.permissions).toEqual({});
