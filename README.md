@@ -272,5 +272,5 @@ runner, as a separate caller job after the main validation jobs pass; it uses no
 actions, secrets or token permissions. `flake-update.yml` runs nightly in Nix
 repositories and opens or updates one `flake.lock` pull request through a GitHub
 App token, the documented exception to alerts-only dependency updates.
-`deploy.yml` (Kubernetes, retired cluster) remains only for one pinned caller;
-`rollout.yml` is removed.
+`deploy.yml` and `rollout.yml`, which targeted the retired Kubernetes cluster,
+are removed.

@@ -136,11 +136,11 @@ do not enable Dependabot version-update pull requests. The one exception is
 repositories call `flake-update.yml` nightly instead (see below).
 
 The `image-build.yml` and `image-tag-release.yml` workflows are unchanged and
-remain for unrelated consumers. `deploy.yml` targets the Kubernetes cluster
-removed on 3 November 2026 and is kept only because
-`whisker-shogunate-website` still calls it from a pinned commit; delete it once
-that caller is gone. `rollout.yml` had no callers and is removed. None of the
-consumers above may call these workflows for releases.
+remain for unrelated consumers. `deploy.yml` and `rollout.yml` targeted the
+Kubernetes cluster removed on 3 November 2026 and are removed;
+`whisker-shogunate-website`'s pinned call to `deploy.yml` is dead until that
+project is revived. None of the consumers above may call these workflows for
+releases.
 
 ## Deploys are separate from validation
 
