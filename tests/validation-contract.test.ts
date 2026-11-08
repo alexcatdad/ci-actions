@@ -278,11 +278,11 @@ describe('repository checks workflow', () => {
 });
 
 describe('existing shared workflows', () => {
-  test.each(['image-build', 'image-tag-release', 'deploy'])('%s.yml is retained', async name => {
+  test.each(['image-build', 'image-tag-release'])('%s.yml is retained', async name => {
     expect(await Bun.file(`.github/workflows/${name}.yml`).exists()).toBe(true);
   });
 
-  test('rollout.yml is retired', async () => {
-    expect(await Bun.file('.github/workflows/rollout.yml').exists()).toBe(false);
+  test.each(['rollout', 'deploy'])('%s.yml is retired', async name => {
+    expect(await Bun.file(`.github/workflows/${name}.yml`).exists()).toBe(false);
   });
 });
