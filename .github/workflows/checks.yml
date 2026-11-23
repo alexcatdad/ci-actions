@@ -57,6 +57,8 @@ jobs:
     uses: ./.github/workflows/validate-pr.yml
     with:
       nix: true
+      # Exercises the changes job; a pull request touching anything else still runs every command.
+      inert-paths: LICENSE
       lint-command: test -f README.md
       build-command: echo synthetic build
       test-command: nix --version | grep -F 2.35.4
