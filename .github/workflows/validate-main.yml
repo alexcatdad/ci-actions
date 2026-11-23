@@ -87,7 +87,10 @@ jobs:
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version: ${{ inputs.go-version }}
-          cache: false
+          # Module and build cache keyed on go.sum; off without go.sum or when Nix supplies the toolchain.
+          # Runs on the default branch save the entries pull requests restore.
+          cache: ${{ !inputs.nix && hashFiles('**/go.sum') != '' }}
+          cache-dependency-path: '**/go.sum'
       - if: inputs.bun-version != ''
         uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
         with:
@@ -134,7 +137,10 @@ jobs:
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version: ${{ inputs.go-version }}
-          cache: false
+          # Module and build cache keyed on go.sum; off without go.sum or when Nix supplies the toolchain.
+          # Runs on the default branch save the entries pull requests restore.
+          cache: ${{ !inputs.nix && hashFiles('**/go.sum') != '' }}
+          cache-dependency-path: '**/go.sum'
       - if: inputs.bun-version != ''
         uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
         with:
@@ -181,7 +187,10 @@ jobs:
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version: ${{ inputs.go-version }}
-          cache: false
+          # Module and build cache keyed on go.sum; off without go.sum or when Nix supplies the toolchain.
+          # Runs on the default branch save the entries pull requests restore.
+          cache: ${{ !inputs.nix && hashFiles('**/go.sum') != '' }}
+          cache-dependency-path: '**/go.sum'
       - if: inputs.bun-version != ''
         uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
         with:

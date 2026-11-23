@@ -103,7 +103,7 @@ describe('PR and main separation', () => {
   const inputs = (name: string) => Object.keys(trigger(workflows[name]).workflow_call.inputs);
 
   test('PR contract covers leak, dependency review, lint, build and test only', () => {
-    expect(Object.keys(workflows['validate-pr'].jobs)).toEqual(['leaks', 'deps', 'lint', 'build', 'test']);
+    expect(Object.keys(workflows['validate-pr'].jobs)).toEqual(['leaks', 'deps', 'changes', 'lint', 'build', 'test']);
     expect(inputs('validate-pr')).toEqual(expect.arrayContaining(['lint-command', 'build-command', 'test-command', 'dependency-review']));
   });
 
@@ -111,12 +111,41 @@ describe('PR and main separation', () => {
     const declared = trigger(workflows['validate-pr']).workflow_call.inputs;
     expect(declared['test-command'].default).toBe('');
     const job = workflows['validate-pr'].jobs.test;
-    expect(job.if).toBe("inputs.test-command != ''");
+    expect(job.if).toBe("${{ !cancelled() && inputs.test-command != '' && needs.changes.outputs.code != 'false' }}");
     expect(job['runs-on']).toBe('${{ inputs.runner }}');
     expect(job.permissions).toEqual({ contents: 'read' });
     const run = job.steps.find((step: any) => step.name === 'Test');
     expect(run.env).toEqual({ COMMAND: '${{ inputs.test-command }}' });
     expect(run.run).toBe('bash -euo pipefail -c "$COMMAND"');
+  });
+
+  test('inert-path skipping is opt-in, PR-only and fail-safe, and never gates leaks or deps', () => {
+    const declared = trigger(workflows['validate-pr']).workflow_call.inputs;
+    expect(declared['inert-paths'].default).toBe('');
+    const jobs = workflows['validate-pr'].jobs;
+    expect(jobs.changes.if).toBe("inputs.inert-paths != '' && github.event_name == 'pull_request'");
+    expect(jobs.changes['runs-on']).toBe('ubuntu-latest');
+    expect(jobs.changes.steps[0].with['fetch-depth']).toBe(2);
+    expect(jobs.changes.steps[1].env).toEqual({ INERT_PATHS: '${{ inputs.inert-paths }}' });
+    for (const id of ['lint', 'build', 'test']) {
+      expect(jobs[id].needs, id).toBe('changes');
+      expect(jobs[id].if, id).toStartWith('${{ !cancelled() && ');
+      expect(jobs[id].if, id).toEndWith(" && needs.changes.outputs.code != 'false' }}");
+    }
+    for (const id of ['leaks', 'deps']) expect(jobs[id].needs, id).toBeUndefined();
+  });
+
+  test.each(validationNames)('%s caches Go only for command jobs in repositories with go.sum', name => {
+    for (const [id, job] of Object.entries<any>(workflows[name].jobs)) {
+      const setupGo = (job.steps ?? []).find((step: any) => String(step.uses).startsWith('actions/setup-go@'));
+      if (!setupGo) continue;
+      if (id === 'leaks') {
+        expect(setupGo.with.cache, id).toBe(false);
+      } else {
+        expect(setupGo.with.cache, id).toBe("${{ !inputs.nix && hashFiles('**/go.sum') != '' }}");
+        expect(setupGo.with['cache-dependency-path'], id).toBe('**/go.sum');
+      }
+    }
   });
 
   test('dependency review blocks high severity and non-allowlisted licenses on pull requests', () => {
