@@ -47,13 +47,13 @@ jobs:
       # Read-only token for the owner's repositories so Nix can fetch private
       # flake inputs; it never reaches git or gh.
       - id: read-token
-        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        uses: actions/create-github-app-token@f418cff399f7aef4c2f0ad47e25ca7a6abbdd6fc # v3.4.0
         with:
           client-id: ${{ secrets.app-client-id }}
           private-key: ${{ secrets.app-private-key }}
           owner: ${{ github.repository_owner }}
           permission-contents: read
-      - uses: cachix/install-nix-action@75c75c31ebece974e48ebc36b4ad125bd97bd97b # v31.11.3
+      - uses: cachix/install-nix-action@3dc140bfc76c49fbd4dd958429132e3746bcb086 # v31.11.5
         with:
           install_url: https://releases.nixos.org/nix/nix-2.35.4/install
           github_access_token: ${{ steps.read-token.outputs.token }}
@@ -71,7 +71,7 @@ jobs:
       # Write token for this repository only, minted after Nix has run.
       - id: write-token
         if: steps.update.outputs.changed == 'true'
-        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        uses: actions/create-github-app-token@f418cff399f7aef4c2f0ad47e25ca7a6abbdd6fc # v3.4.0
         with:
           client-id: ${{ secrets.app-client-id }}
           private-key: ${{ secrets.app-private-key }}

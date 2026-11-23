@@ -64,7 +64,7 @@ jobs:
         with:
           fetch-depth: 0
           persist-credentials: false
-      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+      - uses: actions/setup-go@d8cbb8045d7f43706b9177cceb36c1f91a6644d5 # v7.1.0
         with:
           go-version: ${{ inputs.go-version }}
           cache: false
@@ -84,7 +84,7 @@ jobs:
         with:
           persist-credentials: false
       - if: inputs.go-version != ''
-        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        uses: actions/setup-go@d8cbb8045d7f43706b9177cceb36c1f91a6644d5 # v7.1.0
         with:
           go-version: ${{ inputs.go-version }}
           # Module and build cache keyed on go.sum; off without go.sum or when Nix supplies the toolchain.
@@ -105,14 +105,14 @@ jobs:
         run: command -v corepack >/dev/null || npm install --global corepack@0.36.0; corepack enable
       - if: env.NIX_APP_CLIENT_ID != ''
         id: nix-token
-        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        uses: actions/create-github-app-token@f418cff399f7aef4c2f0ad47e25ca7a6abbdd6fc # v3.4.0
         with:
           client-id: ${{ env.NIX_APP_CLIENT_ID }}
           private-key: ${{ secrets.app-private-key }}
           owner: ${{ github.repository_owner }}
           permission-contents: read
       - if: inputs.nix
-        uses: cachix/install-nix-action@75c75c31ebece974e48ebc36b4ad125bd97bd97b # v31.11.3
+        uses: cachix/install-nix-action@3dc140bfc76c49fbd4dd958429132e3746bcb086 # v31.11.5
         with:
           install_url: https://releases.nixos.org/nix/nix-2.35.4/install
           github_access_token: ${{ steps.nix-token.outputs.token }}
@@ -134,7 +134,7 @@ jobs:
         with:
           persist-credentials: false
       - if: inputs.go-version != ''
-        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        uses: actions/setup-go@d8cbb8045d7f43706b9177cceb36c1f91a6644d5 # v7.1.0
         with:
           go-version: ${{ inputs.go-version }}
           # Module and build cache keyed on go.sum; off without go.sum or when Nix supplies the toolchain.
@@ -155,14 +155,14 @@ jobs:
         run: command -v corepack >/dev/null || npm install --global corepack@0.36.0; corepack enable
       - if: env.NIX_APP_CLIENT_ID != ''
         id: nix-token
-        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        uses: actions/create-github-app-token@f418cff399f7aef4c2f0ad47e25ca7a6abbdd6fc # v3.4.0
         with:
           client-id: ${{ env.NIX_APP_CLIENT_ID }}
           private-key: ${{ secrets.app-private-key }}
           owner: ${{ github.repository_owner }}
           permission-contents: read
       - if: inputs.nix
-        uses: cachix/install-nix-action@75c75c31ebece974e48ebc36b4ad125bd97bd97b # v31.11.3
+        uses: cachix/install-nix-action@3dc140bfc76c49fbd4dd958429132e3746bcb086 # v31.11.5
         with:
           install_url: https://releases.nixos.org/nix/nix-2.35.4/install
           github_access_token: ${{ steps.nix-token.outputs.token }}
@@ -184,7 +184,7 @@ jobs:
         with:
           persist-credentials: false
       - if: inputs.go-version != ''
-        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        uses: actions/setup-go@d8cbb8045d7f43706b9177cceb36c1f91a6644d5 # v7.1.0
         with:
           go-version: ${{ inputs.go-version }}
           # Module and build cache keyed on go.sum; off without go.sum or when Nix supplies the toolchain.
@@ -205,14 +205,14 @@ jobs:
         run: command -v corepack >/dev/null || npm install --global corepack@0.36.0; corepack enable
       - if: env.NIX_APP_CLIENT_ID != ''
         id: nix-token
-        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        uses: actions/create-github-app-token@f418cff399f7aef4c2f0ad47e25ca7a6abbdd6fc # v3.4.0
         with:
           client-id: ${{ env.NIX_APP_CLIENT_ID }}
           private-key: ${{ secrets.app-private-key }}
           owner: ${{ github.repository_owner }}
           permission-contents: read
       - if: inputs.nix
-        uses: cachix/install-nix-action@75c75c31ebece974e48ebc36b4ad125bd97bd97b # v31.11.3
+        uses: cachix/install-nix-action@3dc140bfc76c49fbd4dd958429132e3746bcb086 # v31.11.5
         with:
           install_url: https://releases.nixos.org/nix/nix-2.35.4/install
           github_access_token: ${{ steps.nix-token.outputs.token }}
