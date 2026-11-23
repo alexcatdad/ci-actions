@@ -124,7 +124,7 @@ describe('PR and main separation', () => {
     expect(declared['inert-paths'].default).toBe('');
     const jobs = workflows['validate-pr'].jobs;
     expect(jobs.changes.if).toBe("inputs.inert-paths != '' && github.event_name == 'pull_request'");
-    expect(jobs.changes['runs-on']).toBe('ubuntu-latest');
+    expect(jobs.changes['runs-on']).toBe('${{ inputs.runner }}');
     expect(jobs.changes.steps[0].with['fetch-depth']).toBe(2);
     expect(jobs.changes.steps[1].env).toEqual({ INERT_PATHS: '${{ inputs.inert-paths }}' });
     for (const id of ['lint', 'build', 'test']) {

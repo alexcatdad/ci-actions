@@ -66,7 +66,8 @@ private inputs.
 command reads. Patterns match from the repository root: `*.md` matches
 top-level Markdown only, and `**/*.md` matches it at any depth. A pattern git
 rejects, such as `../x` or `/docs/**`, fails the `changes` job, and every
-command then runs. When it is set, the `changes` job diffs the pull request's merge
+command then runs. When it is set, the `changes` job (on `runner`, like the
+command jobs) diffs the pull request's merge
 commit against its base. If every changed path matches, `lint`, `build` and
 `test` are skipped, and GitHub reports skipped jobs as passing required checks.
 `leaks` and `deps` always run. An empty diff, a non-pull-request event, or a
