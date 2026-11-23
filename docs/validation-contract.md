@@ -10,7 +10,7 @@ explicitly invoked local tool and are outside all of these workflows.
 
 | Workflow | Event it is meant for | Jobs |
 | --- | --- | --- |
-| `validate-pr.yml` | pull requests | `leaks` (tree scan), `deps` (dependency review), `lint`, `build`, `test` |
+| `validate-pr.yml` | pull requests | `leaks` (tree scan), `deps` (dependency review), `changes` (only with `inert-paths`), `lint`, `build`, `test` |
 | `validate-main.yml` | push to the default branch, or a schedule | `leaks` (full history), `test`, `integration`, `security` |
 | `codeql.yml` | pull requests, push to the default branch and a schedule | `analyze`, one check per language |
 
@@ -39,6 +39,13 @@ release no longer bundles it), `nix` (default `false`; `true` installs Nix
 2.35.4 with flakes enabled through `cachix/install-nix-action`, because
 GitHub-hosted runners have no Nix), `leak-scan` (default `true`).
 
+Command jobs (every job except `leaks`) cache Go modules and the Go build cache
+through `actions/setup-go`, keyed on every `go.sum` in the repository. The
+cache is off when the repository has no `go.sum`, or when `nix` is `true`,
+because Nix supplies its own Go. Runs on the default branch
+save entries that pull requests restore; pull request runs save only to their
+own merge ref.
+
 Optional secrets, common to both: `app-client-id` and `app-private-key` of a
 GitHub App installed on the repository owner. They are used only when `nix` is
 `true`: each command job then mints an installation token with
@@ -53,7 +60,17 @@ GitHub withholds secrets from fork pull requests, which therefore cannot fetch
 private inputs.
 
 `validate-pr.yml`: `lint-command`, `build-command`, `test-command`,
-`dependency-review` (default `true`). `test-command` runs the repository's tests
+`dependency-review` (default `true`), `inert-paths` (default empty).
+`inert-paths` takes newline-separated glob pathspecs, such as `README.md` or
+`docs/**`, that cannot affect lint, build or tests. List only paths no
+command reads. Patterns match from the repository root: `*.md` matches
+top-level Markdown only, and `**/*.md` matches it at any depth. A pattern git
+rejects, such as `../x` or `/docs/**`, fails the `changes` job, and every
+command then runs. When it is set, the `changes` job diffs the pull request's merge
+commit against its base. If every changed path matches, `lint`, `build` and
+`test` are skipped, and GitHub reports skipped jobs as passing required checks.
+`leaks` and `deps` always run. An empty diff, a non-pull-request event, or a
+failed or skipped `changes` job runs every command. `test-command` runs the repository's tests
 on the pull request so a change that breaks them cannot merge; pass the same
 command as to `validate-main.yml`. The `deps` job runs `actions/dependency-review-action` on
 `ubuntu-latest` for `pull_request` events only, failing on newly introduced

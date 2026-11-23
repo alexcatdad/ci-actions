@@ -44,6 +44,10 @@ on:
         description: Fail the pull request on newly introduced dependencies with high or critical advisories or disallowed licenses.
         type: boolean
         default: true
+      inert-paths:
+        description: Newline-separated glob pathspecs (for example README.md or docs/**) that cannot affect lint, build or tests. A pull request that changes only these paths skips lint, build and test; leaks and deps always run. Empty runs everything.
+        type: string
+        default: ''
     secrets:
       app-client-id:
         description: Optional GitHub App client ID. With app-private-key and nix, mints a contents-read installation token that Nix uses to fetch private flake inputs of the repository owner.
@@ -85,8 +89,42 @@ jobs:
         with:
           fail-on-severity: high
           allow-licenses: MIT, Apache-2.0, BSD-2-Clause, BSD-3-Clause, ISC, LicenseRef-scancode-google-patent-license-golang
+  changes:
+    # Decides whether the pull request touches anything outside inert-paths.
+    # Fail-safe: a skipped or failed run leaves code unset, so command jobs run.
+    if: inputs.inert-paths != '' && github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    outputs:
+      code: ${{ steps.diff.outputs.code }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          # The merge commit and its first parent (the base) are enough to diff.
+          fetch-depth: 2
+          persist-credentials: false
+      - id: diff
+        name: Classify changed paths
+        env:
+          INERT_PATHS: ${{ inputs.inert-paths }}
+        run: |
+          code=true
+          if [ -n "$(git diff --name-only HEAD^1 HEAD)" ]; then
+            specs=()
+            # read without IFS= trims surrounding whitespace; blank lines are dropped.
+            while read -r spec; do
+              if [ -n "$spec" ]; then specs+=(":(exclude,glob)$spec"); fi
+            done <<< "$INERT_PATHS"
+            # Separate assignment so a git error (bad pathspec) fails the job instead of skipping.
+            rest="$(git diff --name-only HEAD^1 HEAD -- . "${specs[@]}")"
+            [ -n "$rest" ] || code=false
+          fi
+          echo "code=$code" | tee -a "$GITHUB_OUTPUT"
   lint:
-    if: inputs.lint-command != ''
+    needs: changes
+    if: ${{ !cancelled() && inputs.lint-command != '' && needs.changes.outputs.code != 'false' }}
     runs-on: ${{ inputs.runner }}
     timeout-minutes: 15
     permissions:
@@ -102,7 +140,9 @@ jobs:
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version: ${{ inputs.go-version }}
-          cache: false
+          # Module and build cache keyed on go.sum; off without go.sum or when Nix supplies the toolchain.
+          cache: ${{ !inputs.nix && hashFiles('**/go.sum') != '' }}
+          cache-dependency-path: '**/go.sum'
       - if: inputs.bun-version != ''
         uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
         with:
@@ -133,7 +173,8 @@ jobs:
           COMMAND: ${{ inputs.lint-command }}
         run: bash -euo pipefail -c "$COMMAND"
   build:
-    if: inputs.build-command != ''
+    needs: changes
+    if: ${{ !cancelled() && inputs.build-command != '' && needs.changes.outputs.code != 'false' }}
     runs-on: ${{ inputs.runner }}
     timeout-minutes: 20
     permissions:
@@ -149,7 +190,9 @@ jobs:
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version: ${{ inputs.go-version }}
-          cache: false
+          # Module and build cache keyed on go.sum; off without go.sum or when Nix supplies the toolchain.
+          cache: ${{ !inputs.nix && hashFiles('**/go.sum') != '' }}
+          cache-dependency-path: '**/go.sum'
       - if: inputs.bun-version != ''
         uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
         with:
@@ -180,7 +223,8 @@ jobs:
           COMMAND: ${{ inputs.build-command }}
         run: bash -euo pipefail -c "$COMMAND"
   test:
-    if: inputs.test-command != ''
+    needs: changes
+    if: ${{ !cancelled() && inputs.test-command != '' && needs.changes.outputs.code != 'false' }}
     runs-on: ${{ inputs.runner }}
     timeout-minutes: 30
     permissions:
@@ -196,7 +240,9 @@ jobs:
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version: ${{ inputs.go-version }}
-          cache: false
+          # Module and build cache keyed on go.sum; off without go.sum or when Nix supplies the toolchain.
+          cache: ${{ !inputs.nix && hashFiles('**/go.sum') != '' }}
+          cache-dependency-path: '**/go.sum'
       - if: inputs.bun-version != ''
         uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
         with:
