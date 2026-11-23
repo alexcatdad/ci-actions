@@ -53,7 +53,7 @@ jobs:
           private-key: ${{ secrets.app-private-key }}
           owner: ${{ github.repository_owner }}
           permission-contents: read
-      - uses: cachix/install-nix-action@3dc140bfc76c49fbd4dd958429132e3746bcb086 # v31.11.5
+      - uses: cachix/install-nix-action@bb0495a1086c46893eee56f32fd192dfe4a15bb9 # v32.0.0
         with:
           install_url: https://releases.nixos.org/nix/nix-2.35.4/install
           github_access_token: ${{ steps.read-token.outputs.token }}
