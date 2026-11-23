@@ -92,8 +92,10 @@ jobs:
   changes:
     # Decides whether the pull request touches anything outside inert-paths.
     # Fail-safe: a skipped or failed run leaves code unset, so command jobs run.
+    # Runs on the caller's runner, like the command jobs, so repositories on
+    # self-hosted runners don't depend on GitHub-hosted availability.
     if: inputs.inert-paths != '' && github.event_name == 'pull_request'
-    runs-on: ubuntu-latest
+    runs-on: ${{ inputs.runner }}
     timeout-minutes: 5
     permissions:
       contents: read
